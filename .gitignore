@@ -1,0 +1,14 @@
+node_modules/
+dist-app/
+bundled-python/
+scripts/
+activation.json
+favorites.json
+schedules.json
+licensing/private_key.pem
+package.json.bak
+package.json.bak2
+.DS_Store
+__pycache__/
+*.pyc
+.idea/

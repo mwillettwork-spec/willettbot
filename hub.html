@@ -1,0 +1,3906 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8"/>
+  <title>WillettBot</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0e0e0f;
+      --surface: #161618;
+      --surface2: #1e1e21;
+      --border: #2a2a2e;
+      --border2: #3a3a3f;
+      --text: #f0f0ee;
+      --text2: #9090a0;
+      --text3: #555560;
+      --accent: #7c6aff;
+      --accent2: #a594ff;
+      --green: #2ecc71;
+      --amber: #f0a500;
+      --red: #e05252;
+    }
+
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* subtle grid background */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(var(--border) 1px, transparent 1px),
+        linear-gradient(90deg, var(--border) 1px, transparent 1px);
+      background-size: 48px 48px;
+      opacity: 0.3;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .app { position: relative; z-index: 1; }
+
+    /* ── HEADER ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 24px 40px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(14,14,15,0.85);
+      backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-mark {
+      width: 34px;
+      height: 34px;
+      background: var(--accent);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'DM Mono', monospace;
+      font-size: 14px;
+      font-weight: 500;
+      color: white;
+    }
+
+    .logo-name {
+      font-size: 17px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+    }
+
+    .logo-name span {
+      color: var(--accent2);
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 6px 12px;
+      font-size: 12px;
+      color: var(--text2);
+      font-family: 'DM Mono', monospace;
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--green);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* ── MAIN ── */
+    main {
+      padding: 48px 40px;
+      max-width: 1000px;
+      margin: 0 auto;
+    }
+
+    .section-label {
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      letter-spacing: 2px;
+      color: var(--text3);
+      text-transform: uppercase;
+      margin-bottom: 20px;
+    }
+
+    .hero {
+      margin-bottom: 56px;
+    }
+
+    .hero h1 {
+      font-size: 42px;
+      font-weight: 300;
+      letter-spacing: -1.5px;
+      line-height: 1.1;
+      margin-bottom: 12px;
+    }
+
+    .hero h1 strong {
+      font-weight: 600;
+      color: var(--accent2);
+    }
+
+    .hero p {
+      font-size: 15px;
+      color: var(--text2);
+      font-weight: 300;
+      max-width: 480px;
+      line-height: 1.6;
+    }
+
+    /* ── GRID ── */
+    .automations-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin-bottom: 48px;
+    }
+
+    .auto-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 28px;
+      cursor: pointer;
+      transition: border-color 0.2s, transform 0.15s, background 0.2s;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .auto-card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      transition: opacity 0.2s;
+      border-radius: 14px;
+    }
+
+    .auto-card.emailer::before { background: radial-gradient(circle at 0% 0%, rgba(124,106,255,0.12), transparent 60%); }
+    .auto-card.clicker::before { background: radial-gradient(circle at 0% 0%, rgba(46,204,113,0.1), transparent 60%); }
+    .auto-card.new::before    { background: radial-gradient(circle at 0% 0%, rgba(240,165,0,0.08), transparent 60%); }
+
+    .auto-card:hover {
+      border-color: var(--border2);
+      transform: translateY(-2px);
+    }
+
+    .auto-card:hover::before { opacity: 1; }
+
+    .auto-card.disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .auto-card.disabled:hover {
+      transform: none;
+      border-color: var(--border);
+    }
+
+    .card-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      margin-bottom: 20px;
+    }
+
+    .emailer .card-icon { background: rgba(124,106,255,0.15); }
+    .clicker .card-icon { background: rgba(46,204,113,0.12); }
+    .new .card-icon     { background: rgba(240,165,0,0.1); }
+
+    .card-title {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      letter-spacing: -0.2px;
+    }
+
+    .card-desc {
+      font-size: 13px;
+      color: var(--text2);
+      line-height: 1.5;
+      font-weight: 300;
+    }
+
+    .card-badge {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      padding: 3px 8px;
+      border-radius: 20px;
+      letter-spacing: 0.5px;
+    }
+
+    .badge-live  { background: rgba(46,204,113,0.15); color: var(--green); border: 1px solid rgba(46,204,113,0.3); }
+    .badge-soon  { background: rgba(240,165,0,0.1);   color: var(--amber); border: 1px solid rgba(240,165,0,0.25); }
+    .badge-new   { background: rgba(124,106,255,0.1); color: var(--accent2); border: 1px solid rgba(124,106,255,0.25); }
+
+    /* ── RECENT ACTIVITY ── */
+    .activity-section { margin-bottom: 48px; }
+
+    .activity-list {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+    }
+
+    .activity-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+
+    .activity-row:last-child { border-bottom: none; }
+
+    .activity-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .dot-green { background: var(--green); }
+    .dot-amber { background: var(--amber); }
+
+    .activity-name { font-weight: 500; flex: 1; }
+    .activity-detail { color: var(--text2); font-family: 'DM Mono', monospace; font-size: 11px; }
+    .activity-time { color: var(--text3); font-size: 12px; }
+
+    .empty-activity {
+      padding: 32px 24px;
+      text-align: center;
+      color: var(--text3);
+      font-size: 13px;
+    }
+
+    /* ── VIEWS ── */
+    .view { display: none; animation: fadeIn 0.2s ease; }
+    .view.active { display: block; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* ── SPLASH VIEW ──
+       Full-viewport hero shown on app launch. Big wordmark, tagline, and a
+       bottom-right Continue button. Background has a subtle accent-tinted
+       radial glow behind the wordmark so it feels more produced than a
+       plain centered headline. */
+    #view-splash.active { display: flex; }
+    #view-splash {
+      position: fixed;
+      inset: 0;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      background: radial-gradient(1200px 600px at 50% 40%,
+                   rgba(124, 106, 255, 0.18) 0%,
+                   rgba(124, 106, 255, 0.02) 55%,
+                   var(--bg) 100%);
+      z-index: 100;
+      padding: 48px;
+      animation: splashFadeIn 0.5s ease;
+    }
+    @keyframes splashFadeIn { from { opacity: 0 } to { opacity: 1 } }
+    .splash-wordmark {
+      font-size: clamp(64px, 12vw, 140px);
+      font-weight: 700;
+      letter-spacing: -0.04em;
+      line-height: 1;
+      color: var(--text);
+      margin: 0;
+      text-align: center;
+      /* Accent-to-text gradient gives the wordmark depth without a separate
+         logo file. */
+      background: linear-gradient(135deg, #b3a6ff 0%, var(--text) 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .splash-tagline {
+      margin-top: 18px;
+      font-size: clamp(16px, 2.2vw, 22px);
+      color: var(--text2);
+      text-align: center;
+      font-style: italic;
+      letter-spacing: 0.5px;
+    }
+    .splash-continue {
+      position: fixed;
+      bottom: 36px;
+      right: 36px;
+      padding: 14px 28px;
+      font-size: 14px;
+      font-weight: 500;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+      box-shadow: 0 6px 20px rgba(124, 106, 255, 0.35);
+    }
+    .splash-continue:hover {
+      transform: translateY(-2px);
+      background: #8b7aff;
+      box-shadow: 0 10px 28px rgba(124, 106, 255, 0.5);
+    }
+    .splash-continue:active { transform: translateY(0); }
+    .splash-continue::after { content: ' →'; }
+
+    /* ── ACTIVATION VIEW ──
+       Gate screen shown at first launch (and on every launch until a valid
+       key is pasted). Same visual family as the splash — accent gradient,
+       centered hero — but with a key-input form instead of a wordmark. */
+    #view-activation.active { display: flex; }
+    #view-activation {
+      position: fixed;
+      inset: 0;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      background: radial-gradient(1200px 600px at 50% 40%,
+                   rgba(124, 106, 255, 0.18) 0%,
+                   rgba(124, 106, 255, 0.02) 55%,
+                   var(--bg) 100%);
+      z-index: 110;
+      padding: 48px;
+    }
+    .act-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 36px 40px;
+      width: min(520px, 100%);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+    }
+    .act-title {
+      font-size: 26px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin: 0 0 6px 0;
+      color: var(--text);
+    }
+    .act-sub {
+      color: var(--text2);
+      font-size: 14px;
+      margin: 0 0 20px 0;
+      line-height: 1.45;
+    }
+    .act-label {
+      display: block;
+      font-size: 12px;
+      color: var(--text3);
+      margin-bottom: 6px;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+    }
+    .act-input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      color: var(--text);
+      font-family: 'SFMono-Regular', ui-monospace, Menlo, monospace;
+      font-size: 12.5px;
+      line-height: 1.4;
+      resize: vertical;
+      min-height: 84px;
+      box-sizing: border-box;
+    }
+    .act-input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(124, 106, 255, 0.2);
+    }
+    .act-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-top: 16px;
+    }
+    .act-btn {
+      padding: 11px 22px;
+      font-size: 14px;
+      font-weight: 500;
+      font-family: 'DM Sans', sans-serif;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      box-shadow: 0 6px 20px rgba(124, 106, 255, 0.35);
+      transition: background 120ms ease, transform 120ms ease;
+    }
+    .act-btn:hover { background: #8b7aff; transform: translateY(-1px); }
+    .act-btn:active { transform: translateY(0); }
+    .act-btn[disabled] { opacity: 0.6; cursor: wait; transform: none; box-shadow: none; }
+    .act-msg {
+      margin-top: 12px;
+      font-size: 13px;
+      line-height: 1.45;
+      min-height: 18px;
+    }
+    .act-msg.err { color: #ff7b7b; }
+    .act-msg.ok  { color: #7be896; }
+    .act-hint {
+      margin-top: 18px;
+      font-size: 12px;
+      color: var(--text3);
+      line-height: 1.5;
+    }
+    .act-status-bar {
+      position: fixed;
+      top: 10px;
+      right: 14px;
+      font-size: 11px;
+      color: var(--text3);
+      z-index: 120;
+      letter-spacing: 0.3px;
+      user-select: none;
+    }
+    .act-status-bar button {
+      background: none;
+      border: none;
+      color: var(--text3);
+      cursor: pointer;
+      font-size: 11px;
+      padding: 2px 6px;
+      font-family: inherit;
+      margin-left: 6px;
+    }
+    .act-status-bar button:hover { color: var(--text2); text-decoration: underline; }
+
+    /* ── BACK BUTTON ── */
+    .back-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text2);
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+      margin-bottom: 32px;
+      font-family: 'DM Sans', sans-serif;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .back-btn:hover { border-color: var(--border2); color: var(--text); }
+
+    /* ── EMAILER FORM ── */
+    .form-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 40px;
+    }
+
+    .form-title {
+      font-size: 24px;
+      font-weight: 600;
+      letter-spacing: -0.5px;
+      margin-bottom: 4px;
+    }
+
+    .form-subtitle {
+      font-size: 13px;
+      color: var(--text2);
+      margin-bottom: 36px;
+    }
+
+    .field { margin-bottom: 20px; }
+
+    .field label {
+      display: block;
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      letter-spacing: 1.5px;
+      color: var(--text3);
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+
+    .field input,
+    .field textarea,
+    .field select {
+      width: 100%;
+      padding: 12px 16px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 14px;
+      font-family: 'DM Sans', sans-serif;
+      transition: border-color 0.15s;
+      outline: none;
+    }
+
+    .field input:focus,
+    .field textarea:focus,
+    .field select:focus { border-color: var(--accent); }
+
+    .field textarea { resize: vertical; min-height: 100px; }
+
+    /* mode tabs */
+    .mode-tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+
+    .mode-tab {
+      flex: 1;
+      padding: 10px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text2);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      font-family: 'DM Sans', sans-serif;
+      transition: all 0.15s;
+    }
+
+    .mode-tab.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+    }
+
+    .schedule-panel {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px;
+      margin-bottom: 20px;
+      display: none;
+    }
+
+    .schedule-panel.visible { display: block; }
+
+    .schedule-row {
+      display: flex;
+      gap: 12px;
+    }
+
+    .schedule-row .field { flex: 1; margin-bottom: 0; }
+
+    .panel-hint {
+      font-size: 12px;
+      color: var(--text3);
+      margin-bottom: 16px;
+    }
+
+    .submit-btn {
+      width: 100%;
+      padding: 14px;
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: 'DM Sans', sans-serif;
+      transition: background 0.15s, transform 0.1s;
+      margin-top: 8px;
+    }
+
+    .submit-btn:hover { background: var(--accent2); }
+    .submit-btn:active { transform: scale(0.99); }
+
+    .status-bar {
+      margin-top: 16px;
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      display: none;
+    }
+
+    .status-bar.success { background: rgba(46,204,113,0.1); color: var(--green); border: 1px solid rgba(46,204,113,0.2); }
+    .status-bar.error   { background: rgba(224,82,82,0.1);  color: var(--red);   border: 1px solid rgba(224,82,82,0.2); }
+
+    /* ── CLICKER-SPECIFIC ── */
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .two-col .field { margin-bottom: 0; }
+
+    .capture-btn {
+      width: 100%;
+      padding: 10px;
+      background: var(--surface2);
+      border: 1px dashed var(--border2);
+      border-radius: 8px;
+      color: var(--text2);
+      font-size: 13px;
+      font-family: 'DM Mono', monospace;
+      cursor: pointer;
+      margin-top: 8px;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .capture-btn:hover { border-color: var(--accent); color: var(--text); }
+    .capture-btn.counting { color: var(--accent2); border-color: var(--accent); }
+
+    .capture-hint {
+      margin-bottom: 10px;
+      padding: 10px 14px;
+      background: rgba(168,125,255,0.08);
+      border: 1px solid rgba(168,125,255,0.25);
+      border-radius: 8px;
+      font-size: 12.5px;
+      color: var(--text2);
+      line-height: 1.55;
+    }
+    .capture-hint strong { color: var(--text); }
+    .capture-hint em { color: var(--accent2); font-style: normal; }
+
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      color: var(--text2);
+      cursor: pointer;
+      user-select: none;
+      margin-top: 8px;
+    }
+    .checkbox-row input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    .run-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .start-btn, .stop-btn {
+      padding: 14px;
+      border: none;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: 'DM Sans', sans-serif;
+      transition: background 0.15s, transform 0.1s, opacity 0.15s;
+    }
+    .start-btn { background: var(--green); color: #0a1a10; }
+    .start-btn:hover { background: #45e287; }
+    .stop-btn  { background: var(--red); color: white; }
+    .stop-btn:hover  { background: #ef6a6a; }
+    .start-btn:disabled, .stop-btn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .start-btn:active:not(:disabled),
+    .stop-btn:active:not(:disabled) { transform: scale(0.99); }
+
+    .clicker-stats {
+      display: flex;
+      gap: 24px;
+      margin-top: 16px;
+      padding: 14px 16px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-family: 'DM Mono', monospace;
+      font-size: 12px;
+    }
+    .clicker-stats span { color: var(--text3); letter-spacing: 1px; text-transform: uppercase; }
+    .clicker-stats strong { color: var(--text); font-weight: 500; margin-left: 6px; }
+
+    .safety-note {
+      margin-top: 14px;
+      padding: 10px 14px;
+      background: rgba(240,165,0,0.07);
+      border: 1px solid rgba(240,165,0,0.2);
+      border-radius: 8px;
+      font-size: 12px;
+      color: var(--amber);
+      line-height: 1.5;
+    }
+
+    /* ── HELP LINK + MODAL ── */
+    .help-link {
+      float: right;
+      background: none;
+      border: none;
+      color: var(--accent2);
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      text-decoration: underline;
+      cursor: pointer;
+      padding: 0;
+    }
+    .help-link:hover { color: var(--accent); }
+
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(4px);
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      animation: fadeIn 0.15s ease;
+    }
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border2);
+      border-radius: 16px;
+      padding: 32px;
+      max-width: 480px;
+      width: calc(100% - 40px);
+      max-height: 80vh;
+      overflow-y: auto;
+    }
+    .modal-title {
+      font-size: 20px;
+      font-weight: 600;
+      margin-bottom: 4px;
+      letter-spacing: -0.3px;
+    }
+    .modal-subtitle {
+      font-size: 12px;
+      color: var(--text3);
+      margin-bottom: 20px;
+      font-family: 'DM Mono', monospace;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+    .modal-body {
+      font-size: 14px;
+      color: var(--text2);
+      line-height: 1.6;
+      margin-bottom: 20px;
+    }
+    .modal-body ol { padding-left: 20px; margin: 8px 0; }
+    .modal-body li { margin: 6px 0; }
+    .modal-body code {
+      background: var(--surface2);
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-family: 'DM Mono', monospace;
+      font-size: 12px;
+      color: var(--text);
+    }
+    .modal-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    .modal-btn {
+      padding: 10px 18px;
+      border: 1px solid var(--border2);
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      font-family: 'DM Sans', sans-serif;
+      cursor: pointer;
+      background: var(--surface2);
+      color: var(--text);
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .modal-btn:hover { border-color: var(--accent); }
+    .modal-btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+    }
+    .modal-btn.primary:hover { background: var(--accent2); border-color: var(--accent2); }
+    .modal-input {
+      width: 100%;
+      padding: 10px 14px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 14px;
+      margin-bottom: 16px;
+      outline: none;
+    }
+    .modal-input:focus { border-color: var(--accent); }
+
+    /* ── EDIT SCRIPT: BLOCK EDITOR ── */
+    /* Vertical flow diagram of action blocks. Each block is drag-to-reorder
+       and has inline-editable fields plus a delete button. Connector lines
+       between blocks visually chain them together like a recipe. */
+    .block-flow {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      padding: 4px 2px;
+    }
+    .block-flow.dragging .block { transition: transform 0.12s ease; }
+
+    .block {
+      position: relative;
+      display: grid;
+      grid-template-columns: 28px 1fr auto;
+      gap: 12px;
+      align-items: start;
+      padding: 12px 14px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      cursor: grab;
+      transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
+    }
+    .block:hover { border-color: var(--border2); }
+    .block.dragging {
+      opacity: 0.4;
+      cursor: grabbing;
+    }
+    .block.drop-target-above { box-shadow: 0 -2px 0 var(--accent); }
+    .block.drop-target-below { box-shadow: 0 2px 0 var(--accent); }
+
+    /* Vertical connector below each block (hidden on the last one) */
+    .block-wrap {
+      position: relative;
+      padding-bottom: 10px;
+    }
+    .block-wrap:not(:last-child)::after {
+      content: '';
+      position: absolute;
+      left: 26px;
+      bottom: 0;
+      width: 2px;
+      height: 10px;
+      background: var(--border2);
+    }
+
+    .block-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--accent2);
+      background: rgba(124,106,255,0.12);
+      border: 1px solid rgba(124,106,255,0.25);
+      user-select: none;
+    }
+    .block-icon.mouse   { color: #5ac8fa; background: rgba(90,200,250,0.1);  border-color: rgba(90,200,250,0.25); }
+    .block-icon.kb      { color: #ff9f0a; background: rgba(255,159,10,0.1);  border-color: rgba(255,159,10,0.25); }
+    .block-icon.wait    { color: var(--text2); background: rgba(255,255,255,0.04); border-color: var(--border2); }
+    .block-icon.system  { color: var(--green); background: rgba(46,204,113,0.1); border-color: rgba(46,204,113,0.25); }
+    .block-icon.prompt  { color: #ff6aa4; background: rgba(255,106,164,0.1); border-color: rgba(255,106,164,0.25); }
+    .block-icon.say     { color: var(--accent2); }
+
+    .block-body {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .block-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      letter-spacing: -0.1px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .block-title .block-num { color: var(--text3); font-weight: 500; }
+    /* Type selector styled to look like a heading label with a subtle caret. */
+    .block-type-select {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 600;
+      font-family: 'DM Sans', sans-serif;
+      padding: 2px 22px 2px 6px;
+      border-radius: 6px;
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6' fill='none' stroke='%239090a0' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3e%3cpath d='M1 1l4 4 4-4'/%3e%3c/svg%3e");
+      background-repeat: no-repeat;
+      background-position: right 6px center;
+      background-size: 8px 5px;
+      transition: background-color 0.12s, border-color 0.12s;
+    }
+    .block-type-select:hover  { background-color: rgba(124,106,255,0.08); border-color: var(--border); }
+    .block-type-select:focus  { background-color: rgba(124,106,255,0.1);  border-color: var(--accent); outline: none; }
+    .block-type-select option { background: var(--surface); color: var(--text); }
+
+    /* Right-side cluster of per-block buttons (duplicate, delete). */
+    .block-tools {
+      display: inline-flex;
+      gap: 4px;
+      align-items: center;
+    }
+    .block-fields {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 10px;
+      margin-top: 2px;
+    }
+    .block-field {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text2);
+      font-family: 'DM Mono', monospace;
+    }
+    .block-field label {
+      color: var(--text3);
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+    }
+    .block-field input, .block-field select {
+      background: #0a0a0b;
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: 'DM Mono', monospace;
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      outline: none;
+      min-width: 60px;
+    }
+    .block-field input:focus, .block-field select:focus { border-color: var(--accent); }
+    .block-field input.num { width: 72px; }
+    .block-field input.text { min-width: 180px; }
+
+    .block-remove, .block-dup {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text3);
+      font-size: 14px;
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 0.12s, border-color 0.12s, background 0.12s;
+      padding: 0;
+    }
+    .block-remove:hover {
+      color: var(--red);
+      border-color: rgba(224,82,82,0.3);
+      background: rgba(224,82,82,0.08);
+    }
+    .block-dup:hover {
+      color: var(--accent2);
+      border-color: rgba(124,106,255,0.35);
+      background: rgba(124,106,255,0.08);
+    }
+
+    .block-empty {
+      padding: 28px 18px;
+      text-align: center;
+      color: var(--text3);
+      font-size: 13px;
+      border: 1px dashed var(--border2);
+      border-radius: 10px;
+    }
+
+    /* Mode toggle (top-right of the edit modal) */
+    .edit-mode-toggle {
+      display: inline-flex;
+      padding: 2px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .edit-mode-toggle button {
+      background: transparent;
+      border: none;
+      color: var(--text2);
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.12s, color 0.12s;
+    }
+    .edit-mode-toggle button:hover { color: var(--text); }
+    .edit-mode-toggle button.active {
+      background: var(--accent);
+      color: white;
+    }
+
+    /* ── BUILDER ── */
+    .auto-card.builder::before { background: radial-gradient(circle at 0% 0%, rgba(124,106,255,0.1), transparent 60%); }
+    .builder .card-icon { background: rgba(124,106,255,0.15); }
+
+    .script-item {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--border);
+      transition: background 0.15s;
+    }
+    .script-item:last-child { border-bottom: none; }
+    .script-item:hover { background: var(--surface2); }
+
+    .script-item-main { flex: 1; min-width: 0; }
+    .script-item-name { font-weight: 500; font-size: 14px; margin-bottom: 3px; }
+    .script-item-desc {
+      font-size: 12px;
+      color: var(--text2);
+      line-height: 1.4;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+    .script-item-meta {
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      color: var(--text3);
+      margin-top: 4px;
+      letter-spacing: 0.5px;
+    }
+    .script-item-actions { display: flex; gap: 8px; flex-shrink: 0; align-items: center; }
+
+    /* ─── Favorite heart button ─── */
+    /* Outline heart by default; fills in red when the script is a favorite.
+       Visually quiet (text-colored, no border) so it doesn't compete with
+       the Run button. Hover scales a hair for tactile feedback. */
+    .fav-btn {
+      background: transparent;
+      border: none;
+      padding: 4px 6px;
+      cursor: pointer;
+      color: var(--text3);
+      font-size: 18px;
+      line-height: 1;
+      transition: color 120ms ease, transform 120ms ease;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    .fav-btn:hover { color: #ff7b7b; transform: scale(1.12); }
+    .fav-btn.is-fav { color: #ff5a5a; }
+    .fav-btn.is-fav:hover { color: #ff3838; }
+    .fav-btn:focus { outline: none; }
+
+    /* Favorites strip on the hub — same card styling as the built-in auto
+       cards but smaller + with an explicit heart marker so users can tell
+       which are their favorites vs. built-ins. */
+    .fav-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 14px;
+      margin-bottom: 28px;
+    }
+    .fav-grid .auto-card {
+      padding: 18px 18px 20px;
+      position: relative;
+    }
+    .fav-grid .auto-card .card-icon { font-size: 22px; }
+    .fav-grid .auto-card .card-title { font-size: 15px; }
+    .fav-grid .auto-card .card-desc { font-size: 12px; }
+    .fav-grid .auto-card .fav-mark {
+      position: absolute;
+      top: 10px; right: 12px;
+      color: #ff5a5a;
+      font-size: 14px;
+      pointer-events: none;
+    }
+
+    .script-output {
+      background: #0a0a0b;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      font-family: 'DM Mono', monospace;
+      font-size: 12px;
+      line-height: 1.6;
+      max-height: 280px;
+      overflow-y: auto;
+      color: var(--text2);
+    }
+    .log-line { padding: 2px 0; }
+    .log-line.step  { color: var(--accent2); }
+    .log-line.log   { color: var(--text); }
+    .log-line.error { color: var(--red); }
+    .log-line.done  { color: var(--green); }
+    .log-line.warn  { color: var(--amber); }
+    .log-line .ts   { color: var(--text3); margin-right: 10px; }
+
+    /* ── COMING SOON ── */
+    .coming-soon {
+      text-align: center;
+      padding: 80px 40px;
+    }
+
+    .coming-soon .cs-icon {
+      font-size: 48px;
+      margin-bottom: 20px;
+    }
+
+    .coming-soon h2 {
+      font-size: 24px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    .coming-soon p {
+      color: var(--text2);
+      font-size: 14px;
+      max-width: 320px;
+      margin: 0 auto;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <header>
+    <div class="logo">
+      <div class="logo-mark">W</div>
+      <div class="logo-name">Willett<span>Bot</span></div>
+    </div>
+    <div class="header-right">
+      <div class="status-pill">
+        <div class="status-dot"></div>
+        running
+      </div>
+    </div>
+  </header>
+
+  <!-- ── ACTIVATION VIEW ──
+       Shown before anything else on cold launch. On success we transition to
+       the splash view, then the hub. Skipped entirely if a valid activation
+       is already persisted on disk. -->
+  <div id="view-activation" class="view active">
+    <div class="act-card">
+      <h2 class="act-title">Activate WillettBot</h2>
+      <p class="act-sub">Paste your activation key to unlock recording and scripts.
+         Beta keys are free for friends &amp; family — just ask Myles.</p>
+      <label class="act-label" for="act-key">Activation key</label>
+      <textarea id="act-key" class="act-input" spellcheck="false" autocapitalize="off"
+                autocomplete="off" autocorrect="off"
+                placeholder="willettbot-..."></textarea>
+      <div class="act-row">
+        <button class="act-btn" id="act-submit" onclick="submitActivation()">Activate</button>
+        <div class="act-msg" id="act-msg" role="status" aria-live="polite"></div>
+      </div>
+      <div class="act-hint">
+        Keys are validated locally — no internet required. Your key is stored in
+        your user data folder so you only have to enter it once.
+      </div>
+    </div>
+  </div>
+
+  <!-- ── SPLASH VIEW ──
+       Full-viewport hero. Shown after activation on every fresh launch; user
+       clicks Continue to enter the hub. -->
+  <div id="view-splash" class="view">
+    <h1 class="splash-wordmark">willettbot</h1>
+    <p class="splash-tagline">When there's a Willett, there's a way.</p>
+    <button class="splash-continue" onclick="showView('view-hub')">Continue to the hub</button>
+  </div>
+
+  <div id="view-hub" class="view">
+    <main>
+      <div class="hero">
+        <div class="section-label">Dashboard</div>
+        <h1>Your automation<br/><strong>hub</strong></h1>
+        <p>Click an automation to configure and run it. Build new ones from scratch.</p>
+      </div>
+
+      <!-- Favorites strip — auto-hidden when empty. Populated by
+           renderHubFavorites() from the saved favorites.json. -->
+      <div id="hub-favorites-section" style="display:none">
+        <div class="section-label" style="margin-bottom:16px">Your favorites</div>
+        <div id="hub-favorites-grid" class="fav-grid"></div>
+      </div>
+
+      <div class="section-label" style="margin-bottom:16px">Automations</div>
+      <div class="automations-grid">
+
+        <div class="auto-card clicker" onclick="showView('view-clicker')">
+          <span class="card-badge badge-live">LIVE</span>
+          <div class="card-icon">🖱️</div>
+          <div class="card-title">Auto Clicker</div>
+          <div class="card-desc">Automate mouse clicks at any speed and position you choose.</div>
+        </div>
+
+        <div class="auto-card emailer" onclick="launchScriptFromHub('send_gmail.json')">
+          <span class="card-badge badge-live">LIVE</span>
+          <div class="card-icon">✉️</div>
+          <div class="card-title">Send Gmail</div>
+          <div class="card-desc">Compose and send an email through your own browser — one-off or on a recurring schedule.</div>
+        </div>
+
+        <div class="auto-card builder" onclick="showView('view-builder')">
+          <span class="card-badge badge-new">BETA</span>
+          <div class="card-icon">🧱</div>
+          <div class="card-title">Script Builder</div>
+          <div class="card-desc">All your automations in one place. Run, schedule, and (soon) build new ones from scratch.</div>
+        </div>
+
+      </div>
+
+      <div class="activity-section">
+        <div class="section-label" style="margin-bottom:16px">Recent activity</div>
+        <div class="activity-list" id="activity-list">
+          <div class="empty-activity" id="empty-activity">No automations run yet — try sending an email above.</div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ── CLICKER VIEW ── -->
+  <div id="view-clicker" class="view">
+    <main>
+      <button class="back-btn" onclick="showView('view-hub')">← Back to hub</button>
+      <div class="form-card">
+        <div class="form-title">Auto Clicker</div>
+        <div class="form-subtitle">Pick a spot, pick a speed, hit start. Press your stop hotkey (default <strong>Esc</strong>) from any app to halt it immediately.</div>
+
+        <div class="field">
+          <label>Target position</label>
+          <div class="capture-hint">
+            <strong>Easiest way:</strong> click <em>Capture position</em> below, then drag your mouse to the spot you want to click and hold it there — after 3 seconds WillettBot records that position for you. (You can also type X/Y coordinates manually if you know them.)
+          </div>
+          <div class="two-col">
+            <div class="field">
+              <label>X</label>
+              <input id="clk-x" type="number" value="0" min="0"/>
+            </div>
+            <div class="field">
+              <label>Y</label>
+              <input id="clk-y" type="number" value="0" min="0"/>
+            </div>
+          </div>
+          <button class="capture-btn" id="capture-btn" onclick="capturePosition()">
+            Capture position (3s countdown — move your mouse to the target)
+          </button>
+        </div>
+
+        <div class="two-col" style="margin-bottom:20px">
+          <div class="field">
+            <label>Interval (seconds)</label>
+            <input id="clk-interval" type="number" min="0.01" step="0.1" value="0.5"/>
+          </div>
+          <div class="field">
+            <label>Mouse button</label>
+            <select id="clk-button">
+              <option value="left" selected>Left</option>
+              <option value="right">Right</option>
+              <option value="middle">Middle</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="two-col" style="margin-bottom:20px">
+          <div class="field">
+            <label>Stop after (blank = infinite)</label>
+            <div style="display:flex;gap:8px">
+              <input id="clk-limit-value" type="number" min="0.1" step="0.1" placeholder="∞" style="flex:1;min-width:0"/>
+              <select id="clk-limit-unit" style="flex:0 0 110px">
+                <option value="seconds" selected>Seconds</option>
+                <option value="minutes">Minutes</option>
+                <option value="clicks">Clicks</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label>Stop hotkey</label>
+            <select id="clk-stopkey">
+              <option value="esc" selected>Escape</option>
+              <option value="return">Return</option>
+              <option value="f9">F9</option>
+              <option value="f10">F10</option>
+              <option value="f12">F12</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field" style="margin-bottom:12px">
+          <label class="checkbox-row">
+            <input id="clk-double" type="checkbox"/>
+            Double-click each tick
+          </label>
+        </div>
+
+        <div class="run-row">
+          <button class="start-btn" id="clk-start" onclick="startClicker()">Start</button>
+          <button class="stop-btn"   id="clk-stop"  onclick="stopClicker()" disabled>Stop</button>
+        </div>
+
+        <div class="clicker-stats">
+          <div><span>Status</span><strong id="clk-status-text">idle</strong></div>
+          <div><span>Clicks</span><strong id="clk-count">0</strong></div>
+          <div><span>Target</span><strong id="clk-target">—</strong></div>
+          <div><span>Stop</span><strong id="clk-stopkey-display">Esc</strong></div>
+        </div>
+
+        <div class="safety-note">
+          First run only: macOS will ask for <em>Accessibility</em> (for clicking) and <em>Input Monitoring</em> (for the hotkey) — grant both in System Settings → Privacy & Security, then restart the app.
+          <div style="margin-top:10px">
+            <a href="#" onclick="runPermissionCheck(true);return false" style="color:var(--accent);text-decoration:underline;cursor:pointer">Clicks not working? Fix permissions →</a>
+          </div>
+        </div>
+
+        <div class="status-bar" id="clk-status-bar"></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ── BUILDER VIEW ── -->
+  <div id="view-builder" class="view">
+    <main>
+      <button class="back-btn" onclick="showView('view-hub')">← Back to hub</button>
+      <div class="form-card">
+        <div class="form-title">Script Builder</div>
+        <div class="form-subtitle">
+          Each script is a JSON file in <code style="background:var(--surface2);padding:2px 6px;border-radius:4px;font-family:'DM Mono',monospace;font-size:12px">willettbot/scripts/</code>.
+          Edit with any text editor; refresh this page to reload. Visual editor coming next iteration.
+        </div>
+
+        <!-- ── RECORD A NEW SCRIPT ── -->
+        <div class="section-label" style="margin-bottom:12px">Record a new script</div>
+        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:24px">
+          <div style="font-size:13px;color:var(--text2);line-height:1.5;margin-bottom:16px">
+            Pick your hotkeys, click Start, then do the thing you want to automate — clicks, typing, and keystrokes are captured in real time. Press your <strong>end hotkey</strong> to finish, then review and save.
+          </div>
+          <div style="font-size:12px;color:var(--text3);line-height:1.5;margin-bottom:16px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px">
+            <strong style="color:var(--text2)">First time recording?</strong> macOS will ask for permission to watch your keystrokes <em>and</em> to control Finder / System Events / any apps you use — click <em>OK</em> on every prompt. If you miss one, you can re-enable it in <em>System Settings → Privacy &amp; Security → Automation</em>. Without Automation permission the recorder only captures raw clicks, not app switches or file opens.
+          </div>
+          <div class="two-col" style="margin-bottom:14px">
+            <div class="field">
+              <label>Start hotkey</label>
+              <select id="record-start-hotkey">
+                <option value="f9" selected>F9</option>
+                <option value="f8">F8</option>
+                <option value="f7">F7</option>
+                <option value="f6">F6</option>
+                <option value="f5">F5</option>
+                <option value="esc">Esc</option>
+                <option value="return">Return / Enter</option>
+                <option value="shift">Shift</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>End hotkey</label>
+              <select id="record-end-hotkey">
+                <option value="f10" selected>F10</option>
+                <option value="f11">F11</option>
+                <option value="f12">F12</option>
+                <option value="esc">Esc</option>
+                <option value="return">Return / Enter</option>
+                <option value="shift">Shift</option>
+              </select>
+            </div>
+          </div>
+          <div style="font-size:12px;color:var(--text3);margin-top:-4px;margin-bottom:8px">
+            Hotkeys are optional — the Start/Stop buttons below always work. Use Esc or Return if Fn keys don't fire on your Mac.
+          </div>
+          <div class="field">
+            <label>Script name (what you'll see in the list)</label>
+            <input id="record-name" type="text" placeholder="e.g. Open Notion and focus search" value=""/>
+          </div>
+          <div class="run-row">
+            <button class="start-btn" id="record-start-btn" onclick="startRecording()">Start recording</button>
+            <button class="stop-btn" id="record-cancel-btn" onclick="stopRecording()" disabled>Stop recording</button>
+          </div>
+          <div class="clicker-stats" style="margin-top:14px">
+            <div><span>Status</span><strong id="record-status-text">idle</strong></div>
+            <div><span>Captured</span><strong id="record-count">0</strong></div>
+            <div><span>Last</span><strong id="record-last">—</strong></div>
+          </div>
+
+          <div id="record-save-panel" style="display:none;margin-top:14px;padding:16px;background:var(--surface);border:1px solid var(--accent);border-radius:10px">
+            <div style="font-size:14px;margin-bottom:12px">
+              <strong>Recording complete.</strong>
+              <span style="color:var(--text2)"><span id="record-saved-count">0</span> actions captured.</span>
+            </div>
+            <div class="field">
+              <label>Filename (saved to willettbot/scripts/)</label>
+              <input id="record-save-filename" type="text" placeholder="my_new_script"/>
+              <div id="record-save-name-msg" style="display:none;margin-top:6px;font-size:12px;color:#ff8686"></div>
+            </div>
+            <div class="field">
+              <label>Description (optional)</label>
+              <input id="record-save-description" type="text" placeholder="What this script does"/>
+            </div>
+            <div class="run-row">
+              <button class="modal-btn primary" onclick="saveRecordedScript()">Save script</button>
+              <button class="modal-btn" onclick="discardRecordedScript()">Discard</button>
+            </div>
+          </div>
+
+          <div class="safety-note">
+            First run only: macOS may ask for <em>Input Monitoring</em> (to see your keystrokes) and <em>Accessibility</em> (to replay them later). Grant both in System Settings → Privacy & Security.
+            <div style="margin-top:10px">
+              <a href="#" onclick="runPermissionCheck(true);return false" style="color:var(--accent);text-decoration:underline;cursor:pointer">Not capturing? Fix permissions →</a>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-label" style="margin-bottom:12px">Your scripts</div>
+        <div id="scripts-list" class="activity-list" style="margin-bottom:24px">
+          <div class="empty-activity">Loading scripts...</div>
+        </div>
+
+        <div class="section-label" style="margin-bottom:12px">Scheduled runs</div>
+        <div id="schedules-list" class="activity-list" style="margin-bottom:24px">
+          <div class="empty-activity">No scheduled runs yet. Click Run on any script and pick "Once At…" or "Recurring".</div>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <div class="section-label" style="margin-bottom:0">Output</div>
+          <button class="modal-btn" id="script-stop-btn" onclick="stopScript()" style="display:none">Stop</button>
+        </div>
+        <div id="script-output" class="script-output">
+          <div class="log-line"><span class="ts">—</span>Run a script to see output here.</div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+</div>
+
+<!-- ── BUILDER: EDIT SCRIPT MODAL ── -->
+<!-- Block editor + Advanced (raw JSON) toggle. Both modes are views of the
+     same underlying script; switching serializes/parses through the shared
+     _editingScript state so edits round-trip safely. -->
+<div id="edit-script-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this) cancelEditScript()">
+  <div class="modal" style="max-width:780px;width:calc(100% - 40px);max-height:85vh">
+    <!-- Header row: title on the left, Simple/Advanced toggle on the right. -->
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:20px">
+      <div style="min-width:0">
+        <div class="modal-subtitle" style="margin-bottom:4px">Edit script</div>
+        <div class="modal-title" id="edit-script-title" style="margin-bottom:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">script.json</div>
+      </div>
+      <div class="edit-mode-toggle" role="tablist" aria-label="Edit mode">
+        <button id="edit-mode-simple"   class="active" onclick="switchEditMode('simple')">Simple</button>
+        <button id="edit-mode-advanced"               onclick="switchEditMode('advanced')">Advanced</button>
+      </div>
+    </div>
+
+    <!-- SIMPLE pane: block flow. Name field at top, then the draggable action list. -->
+    <div id="edit-pane-simple">
+      <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+        <div style="flex:1;min-width:200px">
+          <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;font-family:'DM Mono',monospace">Name</div>
+          <input id="edit-script-name" class="modal-input" style="margin-bottom:0" type="text" placeholder="My automation"/>
+        </div>
+        <div style="flex:2;min-width:220px">
+          <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;font-family:'DM Mono',monospace">Description</div>
+          <input id="edit-script-description" class="modal-input" style="margin-bottom:0" type="text" placeholder="What this does"/>
+        </div>
+      </div>
+
+      <div id="edit-block-flow" class="block-flow"></div>
+    </div>
+
+    <!-- ADVANCED pane: raw JSON. -->
+    <div id="edit-pane-advanced" style="display:none">
+      <div class="modal-body" style="font-size:13px;color:var(--text2);margin-bottom:12px">
+        Raw JSON. Must stay a valid object with an <code>actions</code> array. Changes apply to the Simple view after Save.
+      </div>
+      <textarea id="edit-script-textarea"
+                spellcheck="false"
+                style="width:100%;height:360px;padding:14px;background:#0a0a0b;color:var(--text);border:1px solid var(--border);border-radius:8px;font-family:'DM Mono',monospace;font-size:12px;line-height:1.5;outline:none;resize:vertical"></textarea>
+    </div>
+
+    <div id="edit-script-error" style="display:none;color:var(--red);font-size:12px;margin-top:10px;font-family:'DM Mono',monospace"></div>
+
+    <div class="modal-actions" style="margin-top:16px">
+      <button class="modal-btn" style="background:rgba(224,82,82,0.1);border-color:rgba(224,82,82,0.3);color:var(--red)" onclick="deleteScriptFromEditor()">Delete</button>
+      <div style="flex:1"></div>
+      <button class="modal-btn" onclick="cancelEditScript()">Cancel</button>
+      <button class="modal-btn primary" onclick="saveEditScript()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── BUILDER: PROMPT MODAL (for human checkpoints inside scripts) ── -->
+<div id="script-prompt-modal" class="modal-overlay" style="display:none">
+  <div class="modal">
+    <div class="modal-subtitle" id="script-prompt-kind">Automation paused</div>
+    <div class="modal-title">Script needs your input</div>
+    <div class="modal-body" id="script-prompt-msg">...</div>
+    <input id="script-prompt-input" class="modal-input" type="text" placeholder="Enter value" style="display:none"/>
+    <div class="modal-actions">
+      <button class="modal-btn" onclick="respondToScriptPrompt(true)">Cancel script</button>
+      <button class="modal-btn primary" onclick="respondToScriptPrompt(false)">Continue</button>
+    </div>
+  </div>
+</div>
+
+<!-- Script variables form — shown before a script runs when it declares variables. -->
+<div id="script-vars-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this) cancelScriptVars()">
+  <div class="modal" style="max-width:520px">
+    <div class="modal-subtitle" id="script-vars-subtitle">Fill in the details</div>
+    <div class="modal-title" id="script-vars-title">Before we run…</div>
+    <div class="modal-body" id="script-vars-body">
+      Review or edit the values this script will use.
+    </div>
+    <div id="script-vars-fields"></div>
+
+    <!-- When to run: Now / Once / Recurring. Same pattern as the Auto Emailer. -->
+    <div style="margin-top:18px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.08)">
+      <div style="font-size:12px;opacity:0.75;margin-bottom:8px;font-family:'DM Mono',monospace;letter-spacing:0.04em;text-transform:uppercase">When to run</div>
+      <div class="mode-tabs" style="margin-bottom:12px">
+        <button class="mode-tab active" data-schedmode="now"       onclick="setScheduleMode('now')">Run Now</button>
+        <button class="mode-tab"        data-schedmode="once"      onclick="setScheduleMode('once')">Once At…</button>
+        <button class="mode-tab"        data-schedmode="recurring" onclick="setScheduleMode('recurring')">Recurring</button>
+      </div>
+
+      <div class="schedule-panel" id="sched-panel-once">
+        <div class="panel-hint">Runs one time at the date and time you pick, then the schedule is removed.</div>
+        <div class="schedule-row">
+          <div class="field"><label>Date</label><input id="sched-once-date" type="date"/></div>
+          <div class="field"><label>Time</label><input id="sched-once-time" type="time"/></div>
+        </div>
+      </div>
+
+      <div class="schedule-panel" id="sched-panel-recurring">
+        <div class="panel-hint">Repeats automatically while WillettBot is running.</div>
+        <div class="schedule-row">
+          <div class="field">
+            <label>Day</label>
+            <select id="sched-recurring-day">
+              <option value="daily">Every day</option>
+              <option value="monday">Every Monday</option>
+              <option value="tuesday">Every Tuesday</option>
+              <option value="wednesday">Every Wednesday</option>
+              <option value="thursday">Every Thursday</option>
+              <option value="friday" selected>Every Friday</option>
+              <option value="saturday">Every Saturday</option>
+              <option value="sunday">Every Sunday</option>
+            </select>
+          </div>
+          <div class="field"><label>Time</label><input id="sched-recurring-time" type="time" value="09:30"/></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-actions" style="margin-top:16px">
+      <button class="modal-btn" onclick="cancelScriptVars()">Cancel</button>
+      <button class="modal-btn primary" id="script-vars-submit" onclick="confirmScriptVars()">Run Script</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Try to load electron IPC — works inside Electron, gracefully skipped in browser
+  var ipcRenderer = null
+  try { ipcRenderer = require('electron').ipcRenderer } catch(e) {}
+
+  // ── VIEW ROUTING ──
+  function showView(id) {
+    document.querySelectorAll('.view').forEach(function(v) { v.classList.remove('active') })
+    document.getElementById(id).classList.add('active')
+  }
+
+  // ── ACTIVATION ──
+  // On cold launch we ask main.js whether a valid key is already persisted.
+  // If yes, skip straight to the splash. If no, leave view-activation active.
+  // submitActivation() validates the pasted key and transitions on success.
+  var _activationInfo = null
+
+  async function bootActivationGate() {
+    if (!ipcRenderer) {
+      // No Electron (e.g. opening hub.html in a browser for styling work) —
+      // hide the gate so the designer can see the rest of the app.
+      var gate = document.getElementById('view-activation')
+      if (gate) gate.classList.remove('active')
+      var splash = document.getElementById('view-splash')
+      if (splash) splash.classList.add('active')
+      return
+    }
+    try {
+      var r = await ipcRenderer.invoke('check-activation')
+      if (r && r.activated) {
+        _activationInfo = r.info
+        document.getElementById('view-activation').classList.remove('active')
+        document.getElementById('view-splash').classList.add('active')
+        renderActivationStatusBar(r)
+      } else {
+        // Keep activation view active. If there's a stale/expired key on disk
+        // show a friendly message so the user knows why they're here.
+        var msg = document.getElementById('act-msg')
+        if (r && r.expired) {
+          msg.textContent = 'Your previous key expired — paste a new one to continue.'
+          msg.className = 'act-msg err'
+        } else if (r && r.reason && r.reason !== 'no public key bundled') {
+          // Silently tolerate the "no key yet" case.
+        }
+      }
+    } catch (e) {
+      var m = document.getElementById('act-msg')
+      if (m) { m.textContent = 'Activation check failed: ' + e.message; m.className = 'act-msg err' }
+    }
+  }
+
+  async function submitActivation() {
+    var input = document.getElementById('act-key')
+    var msg   = document.getElementById('act-msg')
+    var btn   = document.getElementById('act-submit')
+    if (!input) return
+    var key = (input.value || '').trim()
+    if (!key) {
+      msg.textContent = 'Paste your activation key first.'
+      msg.className = 'act-msg err'
+      return
+    }
+    if (!ipcRenderer) {
+      msg.textContent = 'Activation only works inside the app.'
+      msg.className = 'act-msg err'
+      return
+    }
+    btn.disabled = true
+    msg.textContent = 'Checking…'
+    msg.className = 'act-msg'
+    try {
+      var r = await ipcRenderer.invoke('activate-key', { key: key })
+      if (r && r.ok) {
+        _activationInfo = r.info
+        msg.textContent = '✓ Activated — welcome.'
+        msg.className = 'act-msg ok'
+        renderActivationStatusBar({ activated: true, info: r.info })
+        // Tiny pause so the user sees the success state, then transition.
+        setTimeout(function() {
+          document.getElementById('view-activation').classList.remove('active')
+          document.getElementById('view-splash').classList.add('active')
+        }, 500)
+      } else {
+        msg.textContent = (r && r.error) || 'Activation failed.'
+        msg.className = 'act-msg err'
+      }
+    } catch (e) {
+      msg.textContent = 'Activation error: ' + e.message
+      msg.className = 'act-msg err'
+    } finally {
+      btn.disabled = false
+    }
+  }
+
+  // Persistent top-right badge showing "beta · expires …" so the user never
+  // forgets they're on a time-limited key.
+  function renderActivationStatusBar(state) {
+    var existing = document.getElementById('act-status-bar')
+    if (existing) existing.remove()
+    if (!state || !state.info) return
+    var bar = document.createElement('div')
+    bar.id = 'act-status-bar'
+    bar.className = 'act-status-bar'
+    var tier = state.info.tier || 'beta'
+    var exp  = state.info.expires ? new Date(state.info.expires) : null
+    var left = exp ? Math.max(0, Math.round((exp.getTime() - Date.now()) / 86400000)) : null
+    bar.textContent = tier + (left !== null ? ' · ' + left + 'd left' : '')
+    var tourBtn = document.createElement('button')
+    tourBtn.textContent = 'tour'
+    tourBtn.title = 'Replay the intro walkthrough'
+    tourBtn.onclick = function() {
+      if (typeof startTutorial === 'function') startTutorial()
+    }
+    bar.appendChild(tourBtn)
+    var btn = document.createElement('button')
+    btn.textContent = 'sign out'
+    btn.title = 'Remove activation from this machine'
+    btn.onclick = async function() {
+      if (!ipcRenderer) return
+      if (!confirm('Sign out? You\'ll need to paste your key again.')) return
+      try { await ipcRenderer.invoke('deactivate') } catch (e) {}
+      location.reload()
+    }
+    bar.appendChild(btn)
+    document.body.appendChild(bar)
+  }
+
+  // Wire Enter-to-submit on the textarea (Cmd/Ctrl+Enter), so beta users
+  // can activate without reaching for the mouse.
+  document.addEventListener('DOMContentLoaded', function() {
+    var ta = document.getElementById('act-key')
+    if (ta) {
+      ta.addEventListener('keydown', function(e) {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+          e.preventDefault(); submitActivation()
+        }
+      })
+    }
+    bootActivationGate()
+    bootPyEnvBanner()
+    // Intentionally NOT running a proactive permission check on startup:
+    // AXIsProcessTrusted() produces false negatives on freshly rebuilt
+    // unsigned binaries (hash churn vs stale TCC cache), which made the
+    // banner pop up on machines where clicks actually work fine. The
+    // banner still gets triggered on-demand when a script emits an
+    // accessibility-maybe-denied warning — at which point we're sure
+    // something real is going on.
+  })
+
+  // ── PYTHON ENV BOOTSTRAP BANNER ──
+  // First launch of a packaged build creates a private Python venv and installs
+  // pyautogui + pynput. Takes ~20–60 seconds and only happens once. We show a
+  // friendly banner so the user knows what's going on, then hide it when ready.
+  function bootPyEnvBanner() {
+    if (!ipcRenderer) return
+    // Build the banner lazily — only create it when we get our first event.
+    var banner = null
+    function ensureBanner() {
+      if (banner) return banner
+      banner = document.createElement('div')
+      banner.id = 'py-env-banner'
+      banner.style.cssText =
+        'position:fixed;top:14px;left:50%;transform:translateX(-50%);' +
+        'z-index:99999;background:#1e1b38;color:#f5f3ff;' +
+        'border:1px solid #7c6aff;border-radius:10px;padding:10px 16px;' +
+        'font:500 13px -apple-system,BlinkMacSystemFont,sans-serif;' +
+        'box-shadow:0 6px 24px rgba(0,0,0,.35);display:flex;align-items:center;gap:10px;'
+      banner.innerHTML =
+        '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;' +
+        'background:#7c6aff;animation:wbpulse 1.2s infinite;"></span>' +
+        '<span id="py-env-msg">Getting WillettBot ready…</span>'
+      var style = document.createElement('style')
+      style.textContent =
+        '@keyframes wbpulse{0%,100%{opacity:.4}50%{opacity:1}}'
+      document.head.appendChild(style)
+      document.body.appendChild(banner)
+      return banner
+    }
+    function setMsg(t) {
+      var b = ensureBanner()
+      var el = b.querySelector('#py-env-msg')
+      if (el) el.textContent = t
+    }
+    ipcRenderer.on('py-bootstrap', function(_e, data) {
+      if (!data || !data.stage) return
+      if (data.stage === 'creating-venv') {
+        setMsg('Setting up WillettBot (first-time setup, ~30 seconds)…')
+      } else if (data.stage === 'installing-deps') {
+        setMsg('Installing components (one-time)…')
+      } else if (data.stage === 'ready') {
+        setMsg('Ready!')
+        setTimeout(function() {
+          if (banner && banner.parentNode) banner.parentNode.removeChild(banner)
+          banner = null
+        }, 1200)
+      } else if (data.stage === 'failed') {
+        var b = ensureBanner()
+        b.style.background = '#3b1320'
+        b.style.borderColor = '#ff6b8a'
+        setMsg('Setup failed: ' + (data.detail || 'unknown error') +
+               ' — you may need to install Python 3 from python.org.')
+      }
+    })
+  }
+
+  // ── PERMISSION SELF-CHECK ─────────────────────────────────────────────────
+  // The bundled Python is a separate unsigned binary from WillettBot.app, so
+  // macOS requires its own Accessibility / Automation / Input Monitoring
+  // grants. Without those grants pyautogui clicks silently no-op and
+  // osascript rejects with -1743 — the app looks broken with no error. This
+  // runs permcheck.py on launch and shows a persistent setup card on the hub
+  // listing what's missing, with deep-links to the right System Settings panes.
+  var _permState = null          // most recent permcheck result
+  var _permCardBuilt = false     // suppress duplicate banners on re-check
+
+  async function runPermissionCheck(interactive) {
+    if (!ipcRenderer) return
+    try {
+      var res = await ipcRenderer.invoke('check-permissions')
+      _permState = res
+      renderPermissionCard(res, !!interactive)
+    } catch (e) {
+      console.error('[permcheck]', e)
+    }
+  }
+
+  function renderPermissionCard(res, interactive) {
+    // Figure out what's explicitly denied. `null` (couldn't determine) is
+    // treated as OK so we don't cry wolf on weird configs.
+    var denied = []
+    if (res && res.accessibility === false) denied.push('accessibility')
+    if (res && res.automation === false)    denied.push('automation')
+    if (res && res.input_monitoring === false) denied.push('inputMonitoring')
+
+    var existing = document.getElementById('perm-setup-card')
+    if (denied.length === 0) {
+      if (existing) existing.remove()
+      if (interactive) {
+        // User clicked "Not working? Fix permissions" but permcheck says
+        // everything is granted. Most likely cause: TCC hash-churn — the
+        // grant points at a stale binary hash from a prior build.
+        // Show a troubleshooting card instead of the cheerful "all good".
+        renderPermissionTroubleshoot(res)
+      }
+      return
+    }
+
+    if (existing) existing.remove()
+    var card = document.createElement('div')
+    card.id = 'perm-setup-card'
+    card.style.cssText =
+      'margin:18px auto;max-width:720px;padding:18px 22px;' +
+      'background:rgba(240,165,0,0.08);border:1px solid rgba(240,165,0,0.35);' +
+      'border-radius:12px;color:var(--text);font-size:13px;line-height:1.55;'
+
+    var pyPath = (res && res.pythonPath) ? res.pythonPath : ''
+    var rows = ''
+    function row(key, label, body, pane) {
+      var bad = denied.indexOf(key) >= 0
+      if (!bad) return ''
+      return (
+        '<div style="margin-top:12px;padding:10px 12px;background:rgba(0,0,0,0.18);' +
+        'border-radius:8px">' +
+        '<div style="font-weight:600;color:var(--amber);margin-bottom:4px">' +
+        '✗ ' + label + '</div>' +
+        '<div style="color:var(--text2);font-size:12.5px">' + body + '</div>' +
+        '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">' +
+        '<button onclick="openSystemSettings(\'' + pane + '\')" ' +
+        'style="background:var(--accent);color:white;border:0;padding:6px 12px;' +
+        'border-radius:6px;font-size:12px;cursor:pointer">Open ' + label + ' settings</button>' +
+        (key !== 'automation'
+          ? '<button onclick="revealPythonBinary()" ' +
+            'style="background:transparent;color:var(--text2);border:1px solid var(--border2);' +
+            'padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer">' +
+            'Show the Python binary in Finder</button>'
+          : '') +
+        '</div></div>'
+      )
+    }
+    rows += row('accessibility', 'Accessibility',
+      'Needed so WillettBot can move the mouse and press keys. ' +
+      'Drag the WillettBot app into the list and turn it on. If you don\'t see it, ' +
+      'click <em>Show the Python binary in Finder</em> below and drag <code>python3</code> ' +
+      'into the list instead.',
+      'accessibility')
+    rows += row('inputMonitoring', 'Input Monitoring',
+      'Needed so the Esc / F9 stop hotkey works while you\'re in other apps. ' +
+      'Same drag-and-drop process as Accessibility.',
+      'inputMonitoring')
+    rows += row('automation', 'Automation',
+      'Needed so the recorder can detect app switches and file opens, and so ' +
+      'scripts can control apps like Finder or Chrome. You\'ll see a prompt ' +
+      'the first time recording runs — click OK. If you already clicked Don\'t Allow, ' +
+      'toggle WillettBot back on under each app here.',
+      'automation')
+
+    card.innerHTML =
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px">' +
+      '<div style="font-weight:600;color:var(--amber);font-size:14px">' +
+      '⚠ One-time setup — WillettBot needs macOS permissions</div>' +
+      '<button onclick="runPermissionCheck(true)" ' +
+      'style="background:transparent;color:var(--text2);border:1px solid var(--border2);' +
+      'padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer">Re-check</button>' +
+      '</div>' +
+      '<div style="color:var(--text2);margin-top:6px">' +
+      'Without these grants, clicks silently do nothing and scripts can\'t ' +
+      'control other apps. Grant each one below, then click <strong>Re-check</strong>.' +
+      '</div>' +
+      rows +
+      (pyPath
+        ? '<div style="margin-top:12px;font-size:11px;color:var(--text3)">' +
+          'Bundled Python path: <code>' + pyPath.replace(/</g, '&lt;') + '</code></div>'
+        : '')
+
+    // Insert at the top of the hub view so it's the first thing people see.
+    insertCardIntoActiveView(card)
+  }
+
+  // Insert a floating card into whichever view the user is currently looking at.
+  // Previously we always pushed to view-hub, which meant users stuck on the
+  // clicker or builder view never saw the permissions card. Find the .view
+  // with class="active" and prepend into its <main>.
+  function insertCardIntoActiveView(card) {
+    var active = document.querySelector('.view.active')
+    var mainEl = active ? active.querySelector('main') : null
+    if (mainEl) {
+      mainEl.insertBefore(card, mainEl.firstChild)
+      // Scroll the card into view in case the user has scrolled down.
+      try { card.scrollIntoView({ behavior: 'smooth', block: 'start' }) } catch (e) {}
+    } else {
+      document.body.insertBefore(card, document.body.firstChild)
+    }
+  }
+
+  // Shown when permcheck reports everything granted but the user still clicks
+  // "Not working? Fix permissions". On macOS the TCC database keys grants to
+  // each binary's code-signature hash — when an unsigned app is rebuilt, the
+  // hash changes and the stored grant silently stops applying (pyautogui no-ops
+  // with no exception, no prompt). The fix is to clear the stale entry and
+  // re-grant against the new binary.
+  function renderPermissionTroubleshoot(res) {
+    var existing = document.getElementById('perm-setup-card')
+    if (existing) existing.remove()
+    var pyPath = (res && res.pythonPath) ? res.pythonPath : ''
+    var card = document.createElement('div')
+    card.id = 'perm-setup-card'
+    card.style.cssText =
+      'margin:18px auto;max-width:720px;padding:18px 22px;' +
+      'background:rgba(240,165,0,0.08);border:1px solid rgba(240,165,0,0.35);' +
+      'border-radius:12px;color:var(--text);font-size:13px;line-height:1.55;'
+    card.innerHTML =
+      '<div style="font-weight:600;color:var(--amber);font-size:14px">' +
+      '⚠ Permissions look granted but actions aren\'t firing</div>' +
+      '<div style="color:var(--text2);margin-top:8px">' +
+      'macOS remembers permissions by app signature — after an update, the ' +
+      'old permission entry can get stuck. The Reset button below clears ' +
+      'the stuck record so macOS will ask you fresh next time you click Start.' +
+      '</div>' +
+      '<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">' +
+      '<button onclick="resetMacPermissions()" id="reset-tcc-btn" ' +
+      'style="background:var(--accent);color:white;border:0;padding:8px 14px;' +
+      'border-radius:6px;font-size:13px;font-weight:600;cursor:pointer">' +
+      'Reset macOS permissions</button>' +
+      '<button onclick="document.getElementById(\'perm-setup-card\').remove()" ' +
+      'style="background:transparent;color:var(--text3);border:1px solid var(--border2);' +
+      'padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer">Dismiss</button>' +
+      '</div>' +
+      '<div id="reset-tcc-msg" style="margin-top:10px;font-size:12px;color:var(--text2);display:none"></div>' +
+      '<details style="margin-top:14px">' +
+      '<summary style="cursor:pointer;color:var(--text3);font-size:12px">' +
+      'Reset didn\'t help? Manual steps</summary>' +
+      '<ol style="margin:10px 0 0 18px;padding:0;color:var(--text2);font-size:12.5px;line-height:1.7">' +
+      '<li>Click <em>Show the Python binary in Finder</em> below — keep that window open.</li>' +
+      '<li>Open <strong>System Settings → Privacy &amp; Security → Accessibility</strong>.</li>' +
+      '<li>Find any existing <code>python3</code> or <code>WillettBot</code> entries. ' +
+      'Select each and click the <strong>−</strong> button to remove them.</li>' +
+      '<li>Drag the highlighted <code>python3</code> from Finder into the list. Toggle it on.</li>' +
+      '<li>Repeat the same remove-and-re-add for <strong>Input Monitoring</strong>.</li>' +
+      '<li>Quit WillettBot completely (<code>⌘Q</code>) and reopen it.</li>' +
+      '</ol>' +
+      '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">' +
+      '<button onclick="revealPythonBinary()" ' +
+      'style="background:transparent;color:var(--text2);border:1px solid var(--border2);' +
+      'padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer">Show Python in Finder</button>' +
+      '<button onclick="openSystemSettings(\'accessibility\')" ' +
+      'style="background:transparent;color:var(--text2);border:1px solid var(--border2);' +
+      'padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer">Open Accessibility</button>' +
+      '<button onclick="openSystemSettings(\'inputMonitoring\')" ' +
+      'style="background:transparent;color:var(--text2);border:1px solid var(--border2);' +
+      'padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer">Open Input Monitoring</button>' +
+      '</div>' +
+      '</details>' +
+      (pyPath
+        ? '<div style="margin-top:12px;font-size:11px;color:var(--text3)">' +
+          'Binary path: <code>' + pyPath.replace(/</g, '&lt;') + '</code></div>'
+        : '')
+    insertCardIntoActiveView(card)
+  }
+
+  function openSystemSettings(pane) {
+    if (ipcRenderer) ipcRenderer.send('open-system-settings', pane)
+  }
+
+  function revealPythonBinary() {
+    if (ipcRenderer) ipcRenderer.send('reveal-python-binary')
+  }
+
+  // One-click fix for the TCC hash-churn problem. Calls tccutil reset on
+  // the main process — no admin password needed for bundle-scoped resets.
+  // After this runs, the next click attempt will trigger a fresh macOS
+  // permission prompt instead of silently no-opping.
+  //
+  // Explicitly attached to window.* at the bottom of this file so inline
+  // `onclick="resetMacPermissions()"` in dynamically-inserted cards always
+  // resolves — some Electron versions fail to bubble non-window closures
+  // into inline handlers when the card is added via innerHTML.
+  function resetMacPermissions() {
+    if (!ipcRenderer) { alert('Electron IPC unavailable — rebuild the app.'); return }
+    var btn = document.getElementById('reset-tcc-btn')
+    var msg = document.getElementById('reset-tcc-msg')
+    if (btn) { btn.disabled = true; btn.textContent = 'Resetting…' }
+    if (msg) {
+      msg.style.display = 'block'
+      msg.style.color = 'var(--text2)'
+      msg.textContent = 'Running tccutil reset…'
+    }
+    ipcRenderer.invoke('reset-tcc').then(function(res) {
+      if (msg) {
+        msg.style.display = 'block'
+        if (res && res.ok) {
+          msg.style.color = '#7ee787'
+          msg.innerHTML =
+            '✓ Done. Now <strong>quit WillettBot (⌘Q)</strong> and reopen it. ' +
+            'The next time you press Start, macOS will ask for permission — click ' +
+            '<em>Open System Settings</em> on the prompt and toggle it on.'
+        } else {
+          msg.style.color = '#ff8686'
+          msg.textContent = 'Reset failed: ' + ((res && res.error) || 'unknown error') +
+            '. Try the manual steps below.'
+        }
+      }
+    }).catch(function(e) {
+      if (msg) {
+        msg.style.display = 'block'
+        msg.style.color = '#ff8686'
+        msg.textContent = 'Reset failed: ' + (e && e.message ? e.message : String(e))
+      }
+    }).then(function() {
+      if (btn) { btn.disabled = false; btn.textContent = 'Reset macOS permissions' }
+    })
+  }
+  // Make sure inline onclick="resetMacPermissions()" can always reach it.
+  window.resetMacPermissions = resetMacPermissions
+
+  // Generic bottom-center toast. variant: 'success' (default, green) |
+  // 'warn' (amber). Auto-dismisses after 2.6s.
+  function showToast(msg, variant) {
+    var t = document.createElement('div')
+    var warn = variant === 'warn'
+    t.style.cssText =
+      'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);' +
+      (warn
+        ? 'background:#3a2814;color:#ffd198;border:1px solid #b5792d;'
+        : 'background:#14331d;color:#a6f0b8;border:1px solid #4a9c6b;') +
+      'padding:10px 18px;border-radius:10px;font-size:13px;font-weight:500;' +
+      'z-index:99999;box-shadow:0 8px 24px rgba(0,0,0,.35)'
+    t.textContent = msg
+    document.body.appendChild(t)
+    setTimeout(function() { t.remove() }, 2600)
+  }
+  // Permission-specific wrapper. Kept as its own function for clarity at
+  // call sites; always renders green (matches the original behavior).
+  function showPermToast(msg) { showToast(msg) }
+
+  // ── ACTIVITY LOG ──
+  var activityLog = []
+  function logActivity(name, detail) {
+    var now = new Date()
+    var time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    activityLog.unshift({ name: name, detail: detail, time: time })
+    renderActivity()
+  }
+
+  function renderActivity() {
+    var list = document.getElementById('activity-list')
+    // activity-list only exists on the hub view. When renderActivity fires
+    // from other views (e.g. saveRecordedScript calling logActivity) the list
+    // isn't in the DOM — bail gracefully instead of crashing. Same for
+    // empty-activity, which gets wiped out the first time we render rows.
+    if (!list) return
+    if (activityLog.length === 0) {
+      var empty = document.getElementById('empty-activity')
+      if (empty) empty.style.display = 'block'
+      else list.innerHTML =
+        '<div class="empty-activity" id="empty-activity">' +
+        'No automations run yet — try sending an email above.</div>'
+      return
+    }
+    var rows = activityLog.slice(0, 5).map(function(a) {
+      return '<div class="activity-row">' +
+        '<div class="activity-dot dot-green"></div>' +
+        '<div class="activity-name">' + a.name + '</div>' +
+        '<div class="activity-detail">' + a.detail + '</div>' +
+        '<div class="activity-time">' + a.time + '</div>' +
+        '</div>'
+    }).join('')
+    list.innerHTML = rows
+  }
+
+  // ── AUTO CLICKER ──
+  function showClkStatus(msg, success) {
+    var el = document.getElementById('clk-status-bar')
+    el.style.display = 'block'
+    el.className = 'status-bar ' + (success ? 'success' : 'error')
+    el.textContent = msg
+  }
+
+  function setClkStatusText(text) {
+    document.getElementById('clk-status-text').textContent = text
+  }
+
+  function setRunning(running) {
+    document.getElementById('clk-start').disabled = running
+    document.getElementById('clk-stop').disabled  = !running
+    setClkStatusText(running ? 'running' : 'idle')
+  }
+
+  function capturePosition() {
+    var btn = document.getElementById('capture-btn')
+    btn.classList.add('counting')
+    var seconds = 3
+    btn.textContent = 'Move your mouse to target — capturing in ' + seconds + '...'
+    console.log('[capture] countdown start')
+
+    var tick = setInterval(function() {
+      seconds -= 1
+      if (seconds > 0) {
+        btn.textContent = 'Move your mouse to target — capturing in ' + seconds + '...'
+      } else {
+        clearInterval(tick)
+        btn.textContent = 'Capturing...'
+        if (ipcRenderer) {
+          console.log('[capture] sending clicker-get-position IPC')
+          ipcRenderer.send('clicker-get-position')
+        } else {
+          btn.classList.remove('counting')
+          btn.textContent = 'Capture position (3s countdown — move your mouse to the target)'
+          showClkStatus('IPC not available — run this inside Electron.', false)
+        }
+      }
+    }, 1000)
+  }
+
+  function startClicker() {
+    var xRaw = document.getElementById('clk-x').value
+    var yRaw = document.getElementById('clk-y').value
+    var intervalRaw = document.getElementById('clk-interval').value
+    var limitRaw = document.getElementById('clk-limit-value').value
+    var limitUnit = document.getElementById('clk-limit-unit').value
+
+    var x = parseInt(xRaw, 10)
+    var y = parseInt(yRaw, 10)
+    var interval = parseFloat(intervalRaw)
+
+    if (isNaN(x) || isNaN(y)) { showClkStatus('Target X/Y must be numbers.', false); return }
+    if (isNaN(interval) || interval < 0.01) { showClkStatus('Interval must be at least 0.01 seconds.', false); return }
+
+    // Sanity check — (0,0) is almost never a real target. Nudge the user
+    // to capture or type a real position first.
+    if (x === 0 && y === 0) {
+      showClkStatus('Target is (0, 0). Capture a position or type real coordinates first.', false)
+      return
+    }
+
+    // Parse the "Stop after" field into maxClicks OR maxDuration.
+    var maxClicks = 0, maxDuration = 0
+    if (limitRaw !== '') {
+      var lv = parseFloat(limitRaw)
+      if (!isNaN(lv) && lv > 0) {
+        if (limitUnit === 'clicks') maxClicks = Math.floor(lv)
+        else if (limitUnit === 'seconds') maxDuration = lv
+        else if (limitUnit === 'minutes') maxDuration = lv * 60
+      }
+    }
+
+    var stopKey = document.getElementById('clk-stopkey').value
+
+    var config = {
+      x: x,
+      y: y,
+      interval: interval,
+      button: document.getElementById('clk-button').value,
+      doubleClick: document.getElementById('clk-double').checked,
+      maxClicks: maxClicks,
+      maxDuration: maxDuration,
+      stopKey: stopKey
+    }
+
+    var stopLabel = {esc:'Esc', 'return':'Return', f9:'F9', f10:'F10', f12:'F12'}[stopKey] || stopKey
+
+    // Build a human-friendly "will stop when..." string for the status bar.
+    var limitLabel = 'never (until you press ' + stopLabel + ')'
+    if (maxClicks > 0) limitLabel = 'after ' + maxClicks + ' click' + (maxClicks === 1 ? '' : 's')
+    else if (maxDuration > 0) {
+      limitLabel = maxDuration >= 60
+        ? 'after ' + (maxDuration / 60) + ' min'
+        : 'after ' + maxDuration + 's'
+    }
+
+    document.getElementById('clk-count').textContent = '0'
+    document.getElementById('clk-target').textContent = x + ', ' + y
+    document.getElementById('clk-stopkey-display').textContent = stopLabel
+    setRunning(true)
+    showClkStatus('Clicker running — ' + interval + 's interval. Will stop ' + limitLabel + '.', true)
+
+    if (ipcRenderer) {
+      ipcRenderer.send('clicker-start', config)
+    } else {
+      showClkStatus('IPC not available — run this inside Electron.', false)
+      setRunning(false)
+    }
+
+    logActivity('Auto Clicker', 'Start · (' + x + ',' + y + ') every ' + interval + 's')
+  }
+
+  function stopClicker() {
+    if (ipcRenderer) ipcRenderer.send('clicker-stop')
+    setRunning(false)
+    showClkStatus('Stopped.', true)
+    logActivity('Auto Clicker', 'Stopped at ' + document.getElementById('clk-count').textContent + ' clicks')
+  }
+
+  if (ipcRenderer) {
+    ipcRenderer.on('clicker-position', function(event, pos) {
+      console.log('[capture] received clicker-position reply:', pos)
+      var btn = document.getElementById('capture-btn')
+      btn.classList.remove('counting')
+      btn.textContent = 'Capture position (3s countdown — move your mouse to the target)'
+
+      if (pos && typeof pos.x === 'number' && typeof pos.y === 'number') {
+        var xInput = document.getElementById('clk-x')
+        var yInput = document.getElementById('clk-y')
+        xInput.value = pos.x
+        yInput.value = pos.y
+        // Fire change events so any listeners see the update.
+        xInput.dispatchEvent(new Event('input', { bubbles: true }))
+        yInput.dispatchEvent(new Event('input', { bubbles: true }))
+        showClkStatus('Captured position ' + pos.x + ', ' + pos.y + '.', true)
+      } else {
+        var errMsg = pos && pos.error ? pos.error : 'unknown error'
+        var raw = pos && pos._debug
+          ? ' | stdout: ' + JSON.stringify(pos._debug.stdout || '') +
+            ' | stderr: ' + JSON.stringify(pos._debug.stderr || '')
+          : ''
+        console.error('[capture] failed —', errMsg, pos && pos._debug)
+        showClkStatus('Could not capture position: ' + errMsg + raw, false)
+      }
+    })
+
+    ipcRenderer.on('clicker-tick', function(event, data) {
+      if (data && typeof data.count === 'number') {
+        document.getElementById('clk-count').textContent = data.count
+      }
+    })
+
+    ipcRenderer.on('clicker-warning', function(event, data) {
+      showClkStatus('⚠️ ' + (data && data.message ? data.message : 'Warning'), false)
+    })
+
+    ipcRenderer.on('clicker-done', function(event, data) {
+      setRunning(false)
+      var reason = data && data.reason ? data.reason : 'finished'
+      showClkStatus('Clicker ' + reason + ' after ' + (data && data.count || 0) + ' clicks.', true)
+      // The pre-flight accessibility probe was removed from clicker.py — it
+      // false-positived on cursor edges and display scaling. Users who
+      // actually have a permission problem can click the "Clicks not
+      // working? Fix permissions →" link under Start/Stop to get the card.
+    })
+  }
+
+  // ── HUB → BUILDER LAUNCHER ──
+  // When a "favorite" card on the hub is clicked, jump into the builder
+  // view and immediately open the variables/schedule modal for that script.
+  async function launchScriptFromHub(filename) {
+    showView('view-builder')
+    // Make sure the scripts cache is populated before we try to look up
+    // metadata — the builder view might not have been visited yet.
+    if (!_scriptsCache || !_scriptsCache.length) {
+      await loadScripts()
+    }
+    runScript(filename)
+  }
+
+  // ── BUILDER: LIST SCRIPTS ──
+  // The Auto Clicker isn't a JSON script — it's a dedicated view with live
+  // controls. But conceptually it belongs in the "all your automations" list,
+  // so we prepend it as a virtual entry whose Run button just navigates to
+  // its own view.
+  function renderScriptsList(scripts) {
+    var list = document.getElementById('scripts-list')
+    var clickerEntry =
+      '<div class="script-item">' +
+        '<div class="script-item-main">' +
+          '<div class="script-item-name">Auto Clicker</div>' +
+          '<div class="script-item-desc">Automate mouse clicks at any speed and position you choose. Live controls, not a JSON script.</div>' +
+          '<div class="script-item-meta">built-in · live controls</div>' +
+        '</div>' +
+        '<div class="script-item-actions">' +
+          '<button class="modal-btn primary" onclick="showView(\'view-clicker\')">Configure</button>' +
+        '</div>' +
+      '</div>'
+
+    if (!scripts || !scripts.length) {
+      list.innerHTML = clickerEntry +
+        '<div class="empty-activity">No other scripts yet. Drop a .json file into willettbot/scripts/ and refresh.</div>'
+      return
+    }
+    var scriptRows = scripts.map(function(s) {
+      var safeName = String(s.name || s.filename).replace(/</g, '&lt;')
+      var safeDesc = String(s.description || '').replace(/</g, '&lt;')
+      var safeFile = String(s.filename).replace(/"/g, '&quot;')
+      // Outline ♡ by default, filled ♥ when favorited. `data-file` lets the
+      // click handler know which script without needing a per-row closure.
+      var favClass = s.favorite ? 'fav-btn is-fav' : 'fav-btn'
+      var favGlyph = s.favorite ? '♥' : '♡'
+      var favTitle = s.favorite ? 'Unfavorite' : 'Favorite'
+      return '<div class="script-item" data-filename="' + safeFile + '">' +
+        '<div class="script-item-main">' +
+          '<div class="script-item-name">' + safeName + '</div>' +
+          '<div class="script-item-desc">' + safeDesc + '</div>' +
+          '<div class="script-item-meta">' + s.filename + ' · ' + (s.actionCount || 0) + ' action' + (s.actionCount === 1 ? '' : 's') + '</div>' +
+        '</div>' +
+        '<div class="script-item-actions">' +
+          '<button class="' + favClass + '" title="' + favTitle + '" ' +
+            'aria-label="' + favTitle + '" ' +
+            'data-file="' + safeFile + '" ' +
+            'onclick="toggleFavorite(event, \'' + safeFile + '\')">' + favGlyph + '</button>' +
+          '<button class="modal-btn" onclick="editScript(\'' + safeFile + '\')">Edit</button>' +
+          '<button class="modal-btn primary" onclick="runScript(\'' + safeFile + '\')">Run</button>' +
+        '</div>' +
+      '</div>'
+    }).join('')
+    list.innerHTML = clickerEntry + scriptRows
+  }
+
+  // Pulse + scroll-to the script row that was just saved, so the user sees
+  // "it's in the list now" without having to navigate away and back. No-op
+  // if the row can't be found (shouldn't happen — loadScripts is awaited
+  // before this runs, but we're defensive).
+  function highlightSavedScript(filename) {
+    if (!filename) return
+    var esc = (window.CSS && CSS.escape) ? CSS.escape(filename) : filename.replace(/"/g,'\\"')
+    var row = document.querySelector('.script-item[data-filename="' + esc + '"]')
+    if (!row) return
+    try { row.scrollIntoView({ behavior: 'smooth', block: 'center' }) } catch (e) {}
+    // Brief cyan highlight so the user's eye catches which one is new.
+    var prev = row.style.boxShadow
+    row.style.transition = 'box-shadow 0.4s ease'
+    row.style.boxShadow = '0 0 0 2px var(--accent)'
+    setTimeout(function() { row.style.boxShadow = prev || '' }, 1800)
+  }
+
+  // ── FAVORITES ─────────────────────────────────────────────────────────
+  // Flipping the heart is optimistic: we update the button visually before
+  // the IPC roundtrip so the click feels instant, then correct if the main
+  // process rejects it (e.g. script was deleted out from under us).
+  async function toggleFavorite(ev, filename) {
+    if (ev && ev.stopPropagation) ev.stopPropagation()
+    if (!ipcRenderer || !filename) return
+    var btn = ev && ev.currentTarget ? ev.currentTarget : null
+    var wasFav = btn ? btn.classList.contains('is-fav') : false
+    // Optimistic flip so the click feels instant.
+    if (btn) {
+      btn.classList.toggle('is-fav')
+      btn.textContent = btn.classList.contains('is-fav') ? '♥' : '♡'
+    }
+    // Keep the cached script's flag in sync so hub re-renders are correct.
+    if (Array.isArray(_scriptsCache)) {
+      var cached = _scriptsCache.find(function(s) { return s.filename === filename })
+      if (cached) cached.favorite = !wasFav
+    }
+    try {
+      var res = await ipcRenderer.invoke('toggle-favorite', { filename: filename })
+      if (!res || !res.ok) {
+        // Revert optimistic UI.
+        if (btn) {
+          btn.classList.toggle('is-fav')
+          btn.textContent = btn.classList.contains('is-fav') ? '♥' : '♡'
+        }
+        if (Array.isArray(_scriptsCache)) {
+          var c2 = _scriptsCache.find(function(s) { return s.filename === filename })
+          if (c2) c2.favorite = wasFav
+        }
+        appendLog && appendLog('warn', 'Could not favorite: ' + ((res && res.error) || 'unknown'))
+        return
+      }
+      // Refresh the hub favorites strip so the change is visible everywhere.
+      renderHubFavorites()
+    } catch (e) {
+      // Revert on error.
+      if (btn) {
+        btn.classList.toggle('is-fav')
+        btn.textContent = btn.classList.contains('is-fav') ? '♥' : '♡'
+      }
+    }
+  }
+
+  // Cache the most recently loaded scripts so runScript() can look up
+  // variables / name / description without another IPC round-trip.
+  var _scriptsCache = []
+
+  async function loadScripts() {
+    if (!ipcRenderer) {
+      document.getElementById('scripts-list').innerHTML =
+        '<div class="empty-activity">IPC not available — run inside Electron.</div>'
+      return
+    }
+    try {
+      var scripts = await ipcRenderer.invoke('list-scripts')
+      if (scripts && scripts.error) {
+        document.getElementById('scripts-list').innerHTML =
+          '<div class="empty-activity">Error loading scripts: ' + scripts.error + '</div>'
+        return
+      }
+      _scriptsCache = scripts || []
+      renderScriptsList(scripts)
+      // Keep the hub's favorites strip in sync with any script changes that
+      // happened in the builder (delete, rename, save).
+      renderHubFavorites()
+    } catch (e) {
+      document.getElementById('scripts-list').innerHTML =
+        '<div class="empty-activity">Error loading scripts: ' + e.message + '</div>'
+    }
+  }
+
+  // Override showView to refresh scripts + schedules when the builder opens,
+  // and refresh the favorites strip when the hub opens so newly favorited
+  // scripts show up the instant you navigate back.
+  var _origShowView = showView
+  showView = function(id) {
+    _origShowView(id)
+    if (id === 'view-builder') { loadScripts(); loadSchedules() }
+    if (id === 'view-hub')     { renderHubFavorites(); maybeShowTutorial() }
+  }
+
+  // ── HUB: FAVORITES STRIP ──
+  // Pulls the current favorites list + their metadata and renders them as
+  // auto-cards at the top of the hub. The strip auto-hides when no scripts
+  // are favorited so it doesn't clutter empty installs.
+  async function renderHubFavorites() {
+    var section = document.getElementById('hub-favorites-section')
+    var grid    = document.getElementById('hub-favorites-grid')
+    if (!section || !grid || !ipcRenderer) return
+    try {
+      // Need both the favorites set AND each script's metadata (name,
+      // description). list-scripts already includes the favorite flag, so
+      // we just filter it — one IPC call, not two.
+      var scripts = await ipcRenderer.invoke('list-scripts')
+      if (!Array.isArray(scripts)) {
+        section.style.display = 'none'
+        return
+      }
+      var favs = scripts.filter(function(s) { return s.favorite })
+      if (!favs.length) {
+        section.style.display = 'none'
+        grid.innerHTML = ''
+        return
+      }
+      grid.innerHTML = favs.map(function(s) {
+        var safeName = String(s.name || s.filename).replace(/</g, '&lt;')
+        var safeDesc = String(s.description || '').replace(/</g, '&lt;')
+        var safeFile = String(s.filename).replace(/"/g, '&quot;')
+        // Pick a friendly icon based on action signatures — very rough, but
+        // a nice touch vs. a generic "script" emoji for every card.
+        var icon = '🧩'
+        return '<div class="auto-card" onclick="launchScriptFromHub(\'' + safeFile + '\')">' +
+                 '<span class="fav-mark">♥</span>' +
+                 '<div class="card-icon">' + icon + '</div>' +
+                 '<div class="card-title">' + safeName + '</div>' +
+                 '<div class="card-desc">' + (safeDesc || 'Tap to run.') + '</div>' +
+               '</div>'
+      }).join('')
+      section.style.display = 'block'
+    } catch (e) {
+      // Don't surface an error card on the hub — silently hide.
+      section.style.display = 'none'
+    }
+  }
+
+  // Initial render on page load so favorites appear without needing to
+  // navigate away + back. Deferred to allow the IPC bridge to initialize.
+  setTimeout(function() { renderHubFavorites() }, 50)
+
+  // ── BUILDER: EDIT A SCRIPT ──
+  // Two views of the same script:
+  //   Simple  — block flow diagram. Each action is a card with inline-editable
+  //             fields; drag to reorder, click ✕ to delete.
+  //   Advanced — raw JSON textarea for power users.
+  // Switching between modes round-trips through _editingScript, so edits from
+  // either side feed back into the other.
+  var _editingFilename = null
+  var _editingScript   = null        // parsed script object (shared state)
+  var _editingMode     = 'simple'
+  var _dragSourceIndex = null
+
+  // Per-action-type display metadata for the block flow.
+  // icon: short glyph shown in the left badge.
+  // klass: color scheme class on the icon badge.
+  // title: human-readable action name.
+  // fields: list of {key, label, type, opts?} describing editable inputs.
+  //   type ∈ 'int' | 'number' | 'text' | 'textarea' | 'select' | 'keys'
+  var ACTION_TYPES = {
+    click:         { icon: '●',  klass: 'mouse',  title: 'Click',
+                     fields: [{key:'x',label:'X',type:'int'},{key:'y',label:'Y',type:'int'},
+                              {key:'button',label:'Button',type:'select',opts:['left','right','middle']}] },
+    double_click:  { icon: '◉',  klass: 'mouse',  title: 'Double-click',
+                     fields: [{key:'x',label:'X',type:'int'},{key:'y',label:'Y',type:'int'},
+                              {key:'button',label:'Button',type:'select',opts:['left','right','middle']}] },
+    drag:          { icon: '↘',  klass: 'mouse',  title: 'Drag',
+                     fields: [{key:'fromX',label:'From X',type:'int'},{key:'fromY',label:'From Y',type:'int'},
+                              {key:'toX',label:'To X',type:'int'},{key:'toY',label:'To Y',type:'int'},
+                              {key:'button',label:'Button',type:'select',opts:['left','right','middle']},
+                              {key:'duration',label:'Duration (s)',type:'number'}] },
+    move_to:       { icon: '→',  klass: 'mouse',  title: 'Move mouse',
+                     fields: [{key:'x',label:'X',type:'int'},{key:'y',label:'Y',type:'int'},
+                              {key:'duration',label:'Duration (s)',type:'number'}] },
+    type:          { icon: 'T',  klass: 'kb',     title: 'Type text',
+                     fields: [{key:'text',label:'Text',type:'text'},
+                              {key:'interval',label:'Interval (s)',type:'number'}] },
+    press:         { icon: 'K',  klass: 'kb',     title: 'Press key',
+                     fields: [{key:'key',label:'Key',type:'text'}] },
+    hotkey:        { icon: '⌘',  klass: 'kb',     title: 'Hotkey',
+                     fields: [{key:'keys',label:'Keys (+ separated)',type:'keys'}] },
+    wait:          { icon: '⏱',  klass: 'wait',   title: 'Wait',
+                     fields: [{key:'seconds',label:'Seconds',type:'number'}] },
+    say:           { icon: '✎',  klass: 'say',    title: 'Log message',
+                     fields: [{key:'message',label:'Message',type:'text'}] },
+    open_app:      { icon: '▣',  klass: 'system', title: 'Open app',
+                     fields: [{key:'name',label:'App name',type:'text'}] },
+    focus_app:     { icon: '▣',  klass: 'system', title: 'Focus app',
+                     fields: [{key:'name',label:'App name',type:'text'}] },
+    open_file:     { icon: '▤',  klass: 'system', title: 'Open file',
+                     fields: [{key:'path',label:'Path or URL',type:'text'},
+                              {key:'app', label:'Open with (optional)',type:'text'},
+                              {key:'inPlace',label:'In current Finder window',type:'bool'}] },
+    wait_for_app:  { icon: '⌛', klass: 'system', title: 'Wait for app',
+                     fields: [{key:'name',label:'App name',type:'text'},
+                              {key:'timeout',label:'Timeout (s)',type:'number'}] },
+    applescript:   { icon: '{}', klass: 'system', title: 'AppleScript',
+                     fields: [{key:'script',label:'Script',type:'textarea'},
+                              {key:'storeAs',label:'Store as',type:'text'}] },
+    prompt:        { icon: '?',  klass: 'prompt', title: 'Prompt user',
+                     fields: [{key:'message',label:'Message',type:'text'},
+                              {key:'kind',label:'Kind',type:'select',opts:['confirm','input','secure_input']},
+                              {key:'storeAs',label:'Store as',type:'text'}] },
+    switch_desktop:{ icon: '⇔',  klass: 'system', title: 'Switch desktop',
+                     fields: [{key:'direction',label:'Direction',type:'select',opts:['left','right']},
+                              {key:'count',label:'How many',type:'int'}] }
+  }
+
+  function _unknownActionMeta(name) {
+    return { icon: '•', klass: '', title: name || 'Unknown',
+             fields: [] }   // unknown actions show read-only in Simple; edit in Advanced
+  }
+
+  // Default values used when a block's type is changed to one that requires
+  // different fields. We preserve any old field that also appears in the new
+  // type's defaults (so click → double_click keeps x/y/button), then fill in
+  // missing required fields. Bridges below handle coordinate-bearing conversions
+  // (click↔drag share a point even though the field names differ).
+  var ACTION_DEFAULTS = {
+    click:        { x: 0, y: 0, button: 'left' },
+    double_click: { x: 0, y: 0, button: 'left' },
+    drag:         { fromX: 0, fromY: 0, toX: 0, toY: 0, button: 'left', duration: 0.3 },
+    move_to:      { x: 0, y: 0, duration: 0.3 },
+    type:         { text: '', interval: 0.02 },
+    press:        { key: 'enter' },
+    hotkey:       { keys: [] },
+    wait:         { seconds: 1 },
+    say:          { message: '' },
+    open_app:     { name: '' },
+    focus_app:    { name: '' },
+    open_file:    { path: '', app: '', inPlace: false },
+    wait_for_app: { name: '', timeout: 30 },
+    applescript:  { script: '', storeAs: '' },
+    prompt:       { message: '', kind: 'confirm', storeAs: '' },
+    switch_desktop: { direction: 'right', count: 1 }
+  }
+
+  function _convertAction(oldAction, newType) {
+    var defaults = ACTION_DEFAULTS[newType] || {}
+    var out = { action: newType }
+    // Carry forward any compatible keys; fill defaults for the rest.
+    Object.keys(defaults).forEach(function(k) {
+      out[k] = (oldAction[k] !== undefined) ? oldAction[k] : defaults[k]
+    })
+    // Bridge coordinate-bearing actions so a click → drag starts at the click
+    // point (instead of 0,0) and a drag → click lands on the drop point.
+    var oldHasPoint = (typeof oldAction.x === 'number' && typeof oldAction.y === 'number')
+    var oldHasDrag  = (typeof oldAction.toX === 'number' && typeof oldAction.toY === 'number')
+
+    if (oldHasPoint && newType === 'drag' && oldAction.fromX === undefined) {
+      out.fromX = oldAction.x; out.fromY = oldAction.y
+      if (oldAction.toX === undefined) { out.toX = oldAction.x; out.toY = oldAction.y }
+    }
+    if (oldHasDrag && (newType === 'click' || newType === 'double_click' || newType === 'move_to')
+        && oldAction.x === undefined) {
+      out.x = oldAction.toX; out.y = oldAction.toY
+    }
+    return out
+  }
+
+  async function editScript(filename) {
+    if (!ipcRenderer) return
+    var resp = await ipcRenderer.invoke('read-script', filename)
+    if (!resp || !resp.ok) {
+      alert('Could not open ' + filename + ': ' + ((resp && resp.error) || 'unknown'))
+      return
+    }
+    _editingFilename = filename
+    document.getElementById('edit-script-title').textContent = filename
+    clearEditError()
+
+    var parsed = null
+    try { parsed = JSON.parse(resp.content) } catch (e) { parsed = null }
+
+    if (parsed && typeof parsed === 'object') {
+      if (!Array.isArray(parsed.actions)) parsed.actions = []
+      _editingScript = parsed
+      document.getElementById('edit-script-textarea').value = JSON.stringify(parsed, null, 2)
+      _setEditMode('simple')
+    } else {
+      // File has invalid JSON — open Advanced so the user can repair it.
+      _editingScript = null
+      document.getElementById('edit-script-textarea').value = resp.content
+      _setEditMode('advanced')
+      showEditError('Current file is not valid JSON — fix it here to use Simple mode.')
+    }
+
+    document.getElementById('edit-script-modal').style.display = 'flex'
+  }
+
+  function cancelEditScript() {
+    document.getElementById('edit-script-modal').style.display = 'none'
+    _editingFilename = null
+    _editingScript = null
+    _dragSourceIndex = null
+  }
+
+  function showEditError(msg) {
+    var e = document.getElementById('edit-script-error')
+    e.textContent = msg
+    e.style.display = 'block'
+  }
+  function clearEditError() {
+    document.getElementById('edit-script-error').style.display = 'none'
+  }
+
+  // Move between Simple and Advanced. Serializes/parses through _editingScript
+  // so edits in one view survive the switch to the other.
+  function switchEditMode(mode) {
+    if (mode === _editingMode) return
+    if (mode === 'advanced') {
+      // Pull any in-progress name/description changes into state first.
+      _captureHeaderInputs()
+      if (_editingScript) {
+        document.getElementById('edit-script-textarea').value =
+          JSON.stringify(_editingScript, null, 2)
+      }
+      clearEditError()
+    } else {
+      // Advanced → Simple requires valid JSON. If it doesn't parse, stay put.
+      var text = document.getElementById('edit-script-textarea').value
+      var parsed
+      try {
+        parsed = JSON.parse(text)
+        if (!parsed || typeof parsed !== 'object') throw new Error('must be a JSON object')
+        if (!Array.isArray(parsed.actions)) parsed.actions = []
+      } catch (e) {
+        showEditError('Invalid JSON — ' + e.message + '. Fix it here before switching.')
+        return
+      }
+      _editingScript = parsed
+      clearEditError()
+    }
+    _setEditMode(mode)
+  }
+
+  function _setEditMode(mode) {
+    _editingMode = mode
+    document.getElementById('edit-pane-simple').style.display   = mode === 'simple'   ? '' : 'none'
+    document.getElementById('edit-pane-advanced').style.display = mode === 'advanced' ? '' : 'none'
+    document.getElementById('edit-mode-simple').classList.toggle('active',   mode === 'simple')
+    document.getElementById('edit-mode-advanced').classList.toggle('active', mode === 'advanced')
+    if (mode === 'simple') {
+      document.getElementById('edit-script-name').value        = (_editingScript && _editingScript.name)        || ''
+      document.getElementById('edit-script-description').value = (_editingScript && _editingScript.description) || ''
+      renderBlockFlow()
+    }
+  }
+
+  function _captureHeaderInputs() {
+    if (!_editingScript) return
+    _editingScript.name        = document.getElementById('edit-script-name').value
+    _editingScript.description = document.getElementById('edit-script-description').value
+  }
+
+  // ── BLOCK FLOW RENDERING ──
+  function renderBlockFlow() {
+    var flow = document.getElementById('edit-block-flow')
+    flow.innerHTML = ''
+    if (!_editingScript || !_editingScript.actions || !_editingScript.actions.length) {
+      var empty = document.createElement('div')
+      empty.className = 'block-empty'
+      empty.textContent = 'No actions yet. Switch to Advanced to paste JSON, or record a new script from the builder.'
+      flow.appendChild(empty)
+      return
+    }
+    _editingScript.actions.forEach(function(action, idx) {
+      flow.appendChild(_buildBlock(action, idx))
+    })
+  }
+
+  function _buildBlock(action, idx) {
+    var meta = ACTION_TYPES[action.action] || _unknownActionMeta(action.action)
+
+    var wrap = document.createElement('div')
+    wrap.className = 'block-wrap'
+
+    var block = document.createElement('div')
+    block.className = 'block'
+    block.setAttribute('draggable', 'true')
+    block.dataset.index = idx
+
+    // Drag handlers — HTML5 DnD. We store the source index on dragstart and
+    // highlight the hovered block (above/below) based on mouse Y so users
+    // can see exactly where the drop will land.
+    block.addEventListener('dragstart', function(e) {
+      _dragSourceIndex = idx
+      block.classList.add('dragging')
+      try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(idx)) } catch (_) {}
+    })
+    block.addEventListener('dragend', function() {
+      block.classList.remove('dragging')
+      document.querySelectorAll('.block.drop-target-above,.block.drop-target-below')
+        .forEach(function(el) { el.classList.remove('drop-target-above','drop-target-below') })
+    })
+    block.addEventListener('dragover', function(e) {
+      if (_dragSourceIndex === null || _dragSourceIndex === idx) return
+      e.preventDefault()
+      var rect = block.getBoundingClientRect()
+      var isAbove = (e.clientY - rect.top) < rect.height / 2
+      block.classList.toggle('drop-target-above', isAbove)
+      block.classList.toggle('drop-target-below', !isAbove)
+    })
+    block.addEventListener('dragleave', function() {
+      block.classList.remove('drop-target-above','drop-target-below')
+    })
+    block.addEventListener('drop', function(e) {
+      e.preventDefault()
+      var src = _dragSourceIndex
+      _dragSourceIndex = null
+      block.classList.remove('drop-target-above','drop-target-below')
+      if (src === null || src === idx) return
+      var rect = block.getBoundingClientRect()
+      var insertBefore = (e.clientY - rect.top) < rect.height / 2
+      _moveAction(src, idx, insertBefore)
+    })
+
+    // Icon badge
+    var icon = document.createElement('div')
+    icon.className = 'block-icon' + (meta.klass ? ' ' + meta.klass : '')
+    icon.textContent = meta.icon
+    block.appendChild(icon)
+
+    // Body: title + field inputs
+    var body = document.createElement('div')
+    body.className = 'block-body'
+
+    var title = document.createElement('div')
+    title.className = 'block-title'
+    var num = document.createElement('span')
+    num.className = 'block-num'
+    num.textContent = (idx + 1) + '.'
+    title.appendChild(num)
+
+    // Type selector: changes this action's type in-place. Lists every known
+    // action; if the block's current type is unknown it's shown too so it can
+    // be "upgraded" to a known type in one click.
+    var typeSel = document.createElement('select')
+    typeSel.className = 'block-type-select'
+    var knownKeys = Object.keys(ACTION_TYPES)
+    if (!ACTION_TYPES[action.action] && action.action) {
+      var optU = document.createElement('option')
+      optU.value = action.action
+      optU.textContent = action.action + ' (unknown)'
+      typeSel.appendChild(optU)
+    }
+    knownKeys.forEach(function(k) {
+      var o = document.createElement('option')
+      o.value = k
+      o.textContent = ACTION_TYPES[k].title
+      typeSel.appendChild(o)
+    })
+    typeSel.value = action.action
+    // Don't let selecting options start a block drag.
+    typeSel.addEventListener('mousedown', function(ev) { ev.stopPropagation() })
+    typeSel.draggable = false
+    typeSel.addEventListener('change', function() {
+      var newType = typeSel.value
+      if (newType === action.action) return
+      _editingScript.actions[idx] = _convertAction(action, newType)
+      renderBlockFlow()   // re-render so the new type's fields appear
+    })
+    title.appendChild(typeSel)
+    body.appendChild(title)
+
+    if (meta.fields.length) {
+      var fields = document.createElement('div')
+      fields.className = 'block-fields'
+      meta.fields.forEach(function(f) {
+        fields.appendChild(_buildFieldInput(action, f))
+      })
+      body.appendChild(fields)
+    } else if (!ACTION_TYPES[action.action]) {
+      var note = document.createElement('div')
+      note.className = 'block-field'
+      note.style.color = 'var(--text3)'
+      note.textContent = 'Unknown action type — edit in Advanced.'
+      body.appendChild(note)
+    }
+
+    block.appendChild(body)
+
+    // Right-side tool cluster: duplicate + delete.
+    var tools = document.createElement('div')
+    tools.className = 'block-tools'
+
+    var dup = document.createElement('button')
+    dup.className = 'block-dup'
+    dup.type = 'button'
+    dup.setAttribute('aria-label', 'Duplicate action')
+    dup.setAttribute('title', 'Duplicate')
+    dup.textContent = '⧉'
+    dup.addEventListener('click', function(ev) {
+      ev.stopPropagation()
+      // Deep-clone so edits to the copy don't mutate the original.
+      var copy = JSON.parse(JSON.stringify(_editingScript.actions[idx]))
+      _editingScript.actions.splice(idx + 1, 0, copy)
+      renderBlockFlow()
+    })
+    dup.addEventListener('mousedown', function(ev) { ev.stopPropagation() })
+    dup.draggable = false
+    tools.appendChild(dup)
+
+    var rm = document.createElement('button')
+    rm.className = 'block-remove'
+    rm.type = 'button'
+    rm.setAttribute('aria-label', 'Delete action')
+    rm.setAttribute('title', 'Delete')
+    rm.textContent = '✕'
+    rm.addEventListener('click', function(ev) {
+      ev.stopPropagation()
+      _editingScript.actions.splice(idx, 1)
+      renderBlockFlow()
+    })
+    rm.addEventListener('mousedown', function(ev) { ev.stopPropagation() })
+    rm.draggable = false
+    tools.appendChild(rm)
+
+    block.appendChild(tools)
+
+    wrap.appendChild(block)
+    return wrap
+  }
+
+  function _buildFieldInput(action, f) {
+    var span = document.createElement('span')
+    span.className = 'block-field'
+
+    var label = document.createElement('label')
+    label.textContent = f.label
+    span.appendChild(label)
+
+    var input
+    if (f.type === 'bool') {
+      // Checkbox. `span` is the field wrapper; we swap layout so the label
+      // sits AFTER the checkbox (reads more naturally for on/off toggles).
+      input = document.createElement('input')
+      input.type = 'checkbox'
+      input.checked = !!action[f.key]
+      input.style.margin = '0 6px 0 0'
+      input.style.cursor = 'pointer'
+      // Re-order: checkbox first, then label on the right.
+      span.removeChild(label)
+      span.appendChild(input)
+      span.appendChild(label)
+      label.style.cursor = 'pointer'
+      label.addEventListener('click', function() { input.click() })
+      // Guard against drag-to-reorder misfire.
+      input.addEventListener('mousedown', function(ev) { ev.stopPropagation() })
+      input.draggable = false
+      input.addEventListener('change', function() {
+        action[f.key] = !!input.checked
+      })
+      return span
+    } else if (f.type === 'select') {
+      input = document.createElement('select')
+      f.opts.forEach(function(opt) {
+        var o = document.createElement('option')
+        o.value = opt; o.textContent = opt
+        input.appendChild(o)
+      })
+      input.value = (action[f.key] != null ? String(action[f.key]) : f.opts[0])
+    } else if (f.type === 'textarea') {
+      input = document.createElement('textarea')
+      input.rows = 2
+      input.style.minWidth = '240px'
+      input.style.fontFamily = "'DM Mono', monospace"
+      input.style.fontSize = '12px'
+      input.style.padding = '4px 8px'
+      input.style.background = '#0a0a0b'
+      input.style.border = '1px solid var(--border)'
+      input.style.color = 'var(--text)'
+      input.style.borderRadius = '6px'
+      input.style.resize = 'vertical'
+      input.value = action[f.key] != null ? String(action[f.key]) : ''
+    } else {
+      input = document.createElement('input')
+      input.type = (f.type === 'int' || f.type === 'number') ? 'number' : 'text'
+      if (f.type === 'int' || f.type === 'number') input.classList.add('num')
+      else input.classList.add('text')
+      if (f.type === 'number') input.step = 'any'
+      if (f.key === 'keys' && Array.isArray(action.keys)) {
+        input.value = action.keys.join('+')
+      } else {
+        input.value = action[f.key] != null ? String(action[f.key]) : ''
+      }
+    }
+
+    // Prevent drag-from-input from starting a block drag.
+    input.addEventListener('mousedown', function(ev) { ev.stopPropagation() })
+    input.draggable = false
+
+    var write = function() {
+      var v = input.value
+      if (f.type === 'int') {
+        var n = parseInt(v, 10)
+        action[f.key] = isNaN(n) ? 0 : n
+      } else if (f.type === 'number') {
+        var fv = parseFloat(v)
+        action[f.key] = isNaN(fv) ? 0 : fv
+      } else if (f.type === 'keys') {
+        action[f.key] = v.split('+').map(function(s) { return s.trim() }).filter(Boolean)
+      } else {
+        action[f.key] = v
+      }
+    }
+    input.addEventListener('input', write)
+    input.addEventListener('change', write)
+
+    span.appendChild(input)
+    return span
+  }
+
+  // Reorder helper: takes the action at src, inserts it at dst (before or
+  // after), and re-renders. Adjusts the destination index if src < dst since
+  // splicing shifts indices.
+  function _moveAction(src, dst, insertBefore) {
+    if (!_editingScript || !Array.isArray(_editingScript.actions)) return
+    var actions = _editingScript.actions
+    if (src < 0 || src >= actions.length) return
+    var item = actions.splice(src, 1)[0]
+    var target = insertBefore ? dst : dst + 1
+    if (src < dst) target-- // account for the shift caused by the splice above
+    if (target < 0) target = 0
+    if (target > actions.length) target = actions.length
+    actions.splice(target, 0, item)
+    renderBlockFlow()
+  }
+
+  async function saveEditScript() {
+    if (!ipcRenderer || !_editingFilename) return
+    clearEditError()
+
+    var content
+    if (_editingMode === 'advanced') {
+      // Advanced → parse textarea, then re-serialize so the file is
+      // pretty-printed consistently and we keep _editingScript in sync.
+      var text = document.getElementById('edit-script-textarea').value
+      try {
+        var parsed = JSON.parse(text)
+        if (!parsed || typeof parsed !== 'object') throw new Error('must be a JSON object')
+        if (!Array.isArray(parsed.actions)) parsed.actions = []
+        _editingScript = parsed
+        content = JSON.stringify(parsed, null, 2)
+      } catch (e) {
+        showEditError('Invalid JSON — ' + e.message)
+        return
+      }
+    } else {
+      // Simple → pull the name/description from their inputs, then serialize.
+      _captureHeaderInputs()
+      if (!_editingScript) {
+        showEditError('Nothing to save.')
+        return
+      }
+      content = JSON.stringify(_editingScript, null, 2)
+    }
+
+    try {
+      var res = await ipcRenderer.invoke('write-script', {
+        filename: _editingFilename,
+        content: content
+      })
+      if (res && res.ok) {
+        appendLog('done', '💾 Saved ' + res.filename)
+        document.getElementById('edit-script-modal').style.display = 'none'
+        var savedName = res.filename
+        _editingFilename = null
+        _editingScript = null
+        showToast('Saved script ✓')
+        await loadScripts()
+        highlightSavedScript(savedName)
+      } else {
+        showEditError((res && res.error) || 'Unknown error.')
+      }
+    } catch (e) {
+      showEditError(e.message)
+    }
+  }
+
+  async function deleteScriptFromEditor() {
+    if (!ipcRenderer || !_editingFilename) return
+    if (!confirm('Delete ' + _editingFilename + '? This cannot be undone.')) return
+    try {
+      var res = await ipcRenderer.invoke('delete-script', _editingFilename)
+      if (res && res.ok) {
+        appendLog('warn', '🗑 Deleted ' + _editingFilename)
+        document.getElementById('edit-script-modal').style.display = 'none'
+        _editingFilename = null
+        _editingScript = null
+        loadScripts()
+      } else {
+        alert('Could not delete: ' + ((res && res.error) || 'unknown'))
+      }
+    } catch (e) {
+      alert('Delete failed: ' + e.message)
+    }
+  }
+
+  // ── BUILDER: RUN A SCRIPT ──
+  function appendLog(klass, message) {
+    var out = document.getElementById('script-output')
+    var ts = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    var safe = String(message).replace(/</g, '&lt;')
+    out.innerHTML += '<div class="log-line ' + klass + '"><span class="ts">' + ts + '</span>' + safe + '</div>'
+    out.scrollTop = out.scrollHeight
+  }
+
+  function clearLog() {
+    document.getElementById('script-output').innerHTML = ''
+  }
+
+  function runScript(filename) {
+    if (!ipcRenderer) return
+    // Always open the modal — even a script without variables needs to pick
+    // between Run Now / Once / Recurring.
+    var meta = null
+    for (var i = 0; i < _scriptsCache.length; i++) {
+      if (_scriptsCache[i].filename === filename) { meta = _scriptsCache[i]; break }
+    }
+    var vars = (meta && meta.variables) || {}
+    var keys = Object.keys(vars)
+    openScriptVarsModal(filename, meta, vars, keys)
+  }
+
+  function _startScript(filename, variables) {
+    clearLog()
+    appendLog('step', '▶ Starting ' + filename)
+    // Reassurance: the user always has an escape hatch, even when the script
+    // is moving the mouse into other apps and stealing focus.
+    appendLog('step', '⎋ Press Esc any time to stop.')
+    document.getElementById('script-stop-btn').style.display = 'inline-block'
+    var payload = { filename: filename }
+    if (variables && typeof variables === 'object') payload.variables = variables
+    ipcRenderer.send('run-script', payload)
+  }
+
+  // ── BUILDER: VARIABLES-EDIT + SCHEDULE MODAL ──
+  var _pendingScript = null           // { filename, keys, meta }
+  var _pendingScheduleMode = 'now'    // 'now' | 'once' | 'recurring'
+
+  function openScriptVarsModal(filename, meta, vars, keys) {
+    _pendingScript = { filename: filename, keys: keys, meta: meta }
+    document.getElementById('script-vars-title').textContent =
+      'Before we run: ' + (meta && meta.name ? meta.name : filename)
+    document.getElementById('script-vars-body').textContent =
+      (meta && meta.description) ? meta.description : 'Review the values, then choose when to run.'
+
+    var fieldsEl = document.getElementById('script-vars-fields')
+    fieldsEl.innerHTML = ''
+    keys.forEach(function(k) {
+      var val = vars[k]
+      var isMultiline = typeof val === 'string' && (val.length > 80 || val.indexOf('\n') !== -1)
+      var wrap = document.createElement('div')
+      wrap.className = 'modal-field'
+      wrap.style.marginTop = '10px'
+      var label = document.createElement('label')
+      label.textContent = k
+      label.style.display = 'block'
+      label.style.fontSize = '12px'
+      label.style.opacity = '0.75'
+      label.style.marginBottom = '4px'
+      label.style.fontFamily = 'DM Mono, monospace'
+      var input
+      if (isMultiline) {
+        input = document.createElement('textarea')
+        input.rows = 4
+      } else {
+        input = document.createElement('input')
+        input.type = 'text'
+      }
+      input.className = 'modal-input'
+      input.id = 'scriptvar-' + k
+      input.value = (val === null || val === undefined) ? '' : String(val)
+      input.style.width = '100%'
+      input.style.marginBottom = '2px'
+      wrap.appendChild(label)
+      wrap.appendChild(input)
+      fieldsEl.appendChild(wrap)
+    })
+
+    // Pre-populate sensible defaults into the schedule fields.
+    var today = new Date()
+    var yyyy = today.getFullYear()
+    var mm = String(today.getMonth() + 1).padStart(2, '0')
+    var dd = String(today.getDate()).padStart(2, '0')
+    var onceDateEl = document.getElementById('sched-once-date')
+    if (onceDateEl && !onceDateEl.value) onceDateEl.value = yyyy + '-' + mm + '-' + dd
+    var onceTimeEl = document.getElementById('sched-once-time')
+    if (onceTimeEl && !onceTimeEl.value) onceTimeEl.value = '09:30'
+
+    setScheduleMode('now')
+    document.getElementById('script-vars-modal').style.display = 'flex'
+    setTimeout(function() {
+      var first = fieldsEl.querySelector('input, textarea')
+      if (first) first.focus()
+    }, 60)
+  }
+
+  function setScheduleMode(mode) {
+    _pendingScheduleMode = mode
+    // Update tab active state
+    var tabs = document.querySelectorAll('#script-vars-modal .mode-tab')
+    tabs.forEach(function(t) {
+      if (t.dataset.schedmode === mode) t.classList.add('active')
+      else t.classList.remove('active')
+    })
+    // Show/hide panels
+    document.getElementById('sched-panel-once').classList.toggle('visible', mode === 'once')
+    document.getElementById('sched-panel-recurring').classList.toggle('visible', mode === 'recurring')
+    // Update submit button label
+    var btn = document.getElementById('script-vars-submit')
+    if (btn) {
+      if (mode === 'once')      btn.textContent = 'Schedule Once'
+      else if (mode === 'recurring') btn.textContent = 'Set Recurring Schedule'
+      else                      btn.textContent = 'Run Script'
+    }
+  }
+
+  function cancelScriptVars() {
+    document.getElementById('script-vars-modal').style.display = 'none'
+    _pendingScript = null
+  }
+
+  async function confirmScriptVars() {
+    if (!_pendingScript) return
+    var values = {}
+    _pendingScript.keys.forEach(function(k) {
+      var el = document.getElementById('scriptvar-' + k)
+      if (el) values[k] = el.value
+    })
+    var filename = _pendingScript.filename
+    var meta = _pendingScript.meta
+    var mode = _pendingScheduleMode
+
+    if (mode === 'now') {
+      document.getElementById('script-vars-modal').style.display = 'none'
+      _pendingScript = null
+      _startScript(filename, values)
+      return
+    }
+
+    // Build the schedule payload and save it.
+    var payload = {
+      filename: filename,
+      scriptName: (meta && meta.name) || filename,
+      variables: values,
+      mode: mode
+    }
+    if (mode === 'once') {
+      payload.onceDate = document.getElementById('sched-once-date').value
+      payload.onceTime = document.getElementById('sched-once-time').value
+      if (!payload.onceDate || !payload.onceTime) {
+        alert('Please set both a date and time for a one-time schedule.')
+        return
+      }
+    } else if (mode === 'recurring') {
+      payload.recurringDay = document.getElementById('sched-recurring-day').value
+      payload.recurringTime = document.getElementById('sched-recurring-time').value
+      if (!payload.recurringTime) {
+        alert('Please set a time for the recurring schedule.')
+        return
+      }
+    }
+
+    try {
+      var res = await ipcRenderer.invoke('save-schedule', payload)
+      if (res && res.ok) {
+        appendLog('done', '📅 Scheduled ' + (meta && meta.name || filename) + ' — ' + describeSchedule(res.schedule))
+        logActivity('Script Builder', 'Scheduled ' + (meta && meta.name || filename))
+        document.getElementById('script-vars-modal').style.display = 'none'
+        _pendingScript = null
+        loadSchedules()
+      } else {
+        alert('Could not save schedule: ' + ((res && res.error) || 'unknown'))
+      }
+    } catch (e) {
+      alert('Save schedule failed: ' + e.message)
+    }
+  }
+
+  // ── BUILDER: SCHEDULES LIST ──
+  function describeSchedule(sch) {
+    if (!sch) return ''
+    if (sch.mode === 'once') {
+      return 'once on ' + sch.onceDate + ' at ' + sch.onceTime
+    }
+    if (sch.mode === 'recurring') {
+      var day = sch.recurringDay === 'daily'
+        ? 'every day'
+        : 'every ' + sch.recurringDay.charAt(0).toUpperCase() + sch.recurringDay.slice(1)
+      return day + ' at ' + sch.recurringTime
+    }
+    return ''
+  }
+
+  function formatNextRun(ts) {
+    if (!ts) return '—'
+    var d = new Date(ts)
+    var now = new Date()
+    var sameDay = d.toDateString() === now.toDateString()
+    var time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    if (sameDay) return 'today at ' + time
+    var tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1)
+    if (d.toDateString() === tomorrow.toDateString()) return 'tomorrow at ' + time
+    var datePart = d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+    return datePart + ' at ' + time
+  }
+
+  async function loadSchedules() {
+    if (!ipcRenderer) return
+    var list = document.getElementById('schedules-list')
+    try {
+      var items = await ipcRenderer.invoke('list-schedules')
+      if (!items || !items.length) {
+        list.innerHTML = '<div class="empty-activity">No scheduled runs yet. Click Run on any script and pick "Once At…" or "Recurring".</div>'
+        return
+      }
+      list.innerHTML = items.map(function(s) {
+        var safeName = String(s.scriptName || s.filename).replace(/</g, '&lt;')
+        var safeId = String(s.id).replace(/"/g, '&quot;')
+        var nextLabel = s.enabled ? ('Next run: ' + formatNextRun(s.nextRun)) : 'Disabled'
+        return '<div class="script-item">' +
+          '<div class="script-item-main">' +
+            '<div class="script-item-name">' + safeName + '</div>' +
+            '<div class="script-item-desc">' + describeSchedule(s) + '</div>' +
+            '<div class="script-item-meta">' + nextLabel + '</div>' +
+          '</div>' +
+          '<div class="script-item-actions">' +
+            '<button class="modal-btn" onclick="deleteSchedule(\'' + safeId + '\')">Cancel</button>' +
+          '</div>' +
+        '</div>'
+      }).join('')
+    } catch (e) {
+      list.innerHTML = '<div class="empty-activity">Error loading schedules: ' + e.message + '</div>'
+    }
+  }
+
+  async function deleteSchedule(id) {
+    if (!ipcRenderer) return
+    if (!confirm('Remove this scheduled run?')) return
+    try {
+      await ipcRenderer.invoke('delete-schedule', id)
+      loadSchedules()
+    } catch (e) {
+      alert('Could not remove schedule: ' + e.message)
+    }
+  }
+
+  // React to server-side schedule changes (e.g. a schedule just fired).
+  if (ipcRenderer) {
+    ipcRenderer.on('schedules-changed', function() { loadSchedules() })
+  }
+
+  function stopScript() {
+    if (ipcRenderer) ipcRenderer.send('stop-script')
+    appendLog('warn', '⏹ Stop requested')
+    document.getElementById('script-stop-btn').style.display = 'none'
+  }
+
+  if (ipcRenderer) {
+    ipcRenderer.on('script-event', function(event, evt) {
+      if (!evt) return
+      if (evt.event === 'script-start') {
+        appendLog('step', '▶ ' + evt.name + ' (' + evt.total + ' steps)')
+      } else if (evt.event === 'step') {
+        appendLog('step', '  ◦ step ' + (evt.index + 1) + ': ' + evt.label)
+      } else if (evt.event === 'log') {
+        appendLog('log', evt.message)
+      } else if (evt.event === 'prompt') {
+        openScriptPrompt(evt)
+      } else if (evt.event === 'warning') {
+        appendLog('warn', '⚠ ' + evt.message)
+      } else if (evt.event === 'error') {
+        appendLog('error', '✖ ' + (evt.message || 'error'))
+        document.getElementById('script-stop-btn').style.display = 'none'
+        logActivity('Script Builder', 'Error in script')
+      } else if (evt.event === 'failsafe') {
+        appendLog('warn', '⏹ Stopped')
+        document.getElementById('script-stop-btn').style.display = 'none'
+      } else if (evt.event === 'script-done') {
+        appendLog('done', '✓ Done')
+        document.getElementById('script-stop-btn').style.display = 'none'
+        logActivity('Script Builder', 'Ran ' + (evt.name || 'script'))
+      } else if (evt.event === 'stopped') {
+        appendLog('warn', '⏹ Stopped')
+        document.getElementById('script-stop-btn').style.display = 'none'
+      }
+    })
+  }
+
+  // ── BUILDER: PROMPT MODAL ──
+  var activePromptId = null
+  var activePromptKind = 'confirm'
+
+  function openScriptPrompt(evt) {
+    activePromptId = evt.id
+    activePromptKind = evt.kind || 'confirm'
+    document.getElementById('script-prompt-msg').textContent = evt.message || ''
+    var input = document.getElementById('script-prompt-input')
+    if (activePromptKind === 'input' || activePromptKind === 'secure_input') {
+      input.style.display = 'block'
+      input.type = activePromptKind === 'secure_input' ? 'password' : 'text'
+      input.value = ''
+      setTimeout(function() { input.focus() }, 50)
+    } else {
+      input.style.display = 'none'
+    }
+    document.getElementById('script-prompt-kind').textContent = activePromptKind === 'secure_input' ? 'Sensitive input (not stored)' : 'Automation paused'
+    document.getElementById('script-prompt-modal').style.display = 'flex'
+  }
+
+  function respondToScriptPrompt(cancelled) {
+    if (!activePromptId) return
+    var payload = { id: activePromptId, cancelled: !!cancelled }
+    if (!cancelled && (activePromptKind === 'input' || activePromptKind === 'secure_input')) {
+      payload.value = document.getElementById('script-prompt-input').value
+    }
+    if (ipcRenderer) ipcRenderer.send('script-prompt-response', payload)
+    document.getElementById('script-prompt-modal').style.display = 'none'
+    activePromptId = null
+  }
+
+  // ── BUILDER: RECORD A NEW SCRIPT ──
+  // The recorder is a pynput-based Python subprocess that listens for a
+  // start hotkey, captures mouse clicks + keyboard until an end hotkey, and
+  // returns a compiled runner.py-compatible script. The UI below wires up
+  // the start/stop buttons, live counter, and save panel.
+  var _recordedScript = null       // the compiled script, after the end hotkey fires
+
+  function setRecordStatus(text, running) {
+    document.getElementById('record-status-text').textContent = text
+    document.getElementById('record-start-btn').disabled = !!running
+    document.getElementById('record-cancel-btn').disabled = !running
+  }
+
+  function describeRecordedAction(a) {
+    if (!a) return '—'
+    function shortPath(p) {
+      // Collapse $HOME to ~ for readable path previews.
+      if (!p) return ''
+      return String(p).length > 48 ? '…' + String(p).slice(-46) : String(p)
+    }
+    switch (a.action) {
+      case 'click':        return 'click (' + a.x + ',' + a.y + ')'
+      case 'double_click': return 'double-click (' + a.x + ',' + a.y + ')'
+      case 'drag':         return 'drag (' + a.fromX + ',' + a.fromY + ') → (' + a.toX + ',' + a.toY + ')'
+      case 'move_to':      return 'move to (' + a.x + ',' + a.y + ')'
+      case 'char':         return 'type "' + a.char + '"'
+      case 'type':         return 'type "' + (a.text || '').slice(0, 20) + '"'
+      case 'press':        return 'press ' + a.key
+      case 'hotkey':       return (a.keys || []).join('+')
+      case 'wait':         return 'wait ' + a.seconds + 's'
+      // Context-aware semantic events — these replace raw clicks when the
+      // recorder notices the user switched apps or opened a folder/file.
+      case 'focus_app':    return 'switch to ' + (a.name || '?')
+      case 'open_app':     return 'open app ' + (a.name || '?')
+      case 'wait_for_app': return 'wait for app ' + (a.name || '?')
+      case 'open_file':    return (a.inPlace ? 'navigate to ' : 'open ') + shortPath(a.path)
+                                  + (a.app ? ' with ' + a.app : '')
+      case 'switch_desktop': return 'swipe ' + (a.direction || 'right')
+                                  + (a.count && a.count > 1 ? ' ×' + a.count : '')
+      default:             return a.action || '?'
+    }
+  }
+
+  // 3-2-1 countdown before auto-starting so the user has a moment to stop
+  // touching the keyboard/mouse after clicking Start. Cancelable if the
+  // user clicks Stop during the countdown.
+  var _recordCountdownTimer = null
+  var _recordCountdownCancelled = false
+
+  function startRecording() {
+    if (!ipcRenderer) return
+    var startKey = document.getElementById('record-start-hotkey').value
+    var endKey   = document.getElementById('record-end-hotkey').value
+    if (startKey === endKey) {
+      alert('Start and end hotkeys must be different.')
+      return
+    }
+    var name = document.getElementById('record-name').value.trim() || 'Recorded Script'
+    _recordedScript = null
+    document.getElementById('record-save-panel').style.display = 'none'
+    document.getElementById('record-count').textContent = '0'
+    document.getElementById('record-last').textContent = '—'
+    _recordCountdownCancelled = false
+
+    // Countdown in the status box so the user knows when to let go of the
+    // trackpad. On 0 we spawn the recorder with --auto-start so hotkeys
+    // aren't required for it to begin capturing.
+    var n = 3
+    setRecordStatus('starting in ' + n + '...', true)
+    if (_recordCountdownTimer) clearInterval(_recordCountdownTimer)
+    _recordCountdownTimer = setInterval(function() {
+      if (_recordCountdownCancelled) {
+        clearInterval(_recordCountdownTimer); _recordCountdownTimer = null
+        setRecordStatus('cancelled', false)
+        return
+      }
+      n -= 1
+      if (n > 0) {
+        setRecordStatus('starting in ' + n + '...', true)
+        return
+      }
+      clearInterval(_recordCountdownTimer); _recordCountdownTimer = null
+      ipcRenderer.send('record-start', {
+        startHotkey: startKey,
+        endHotkey: endKey,
+        name: name,
+        description: 'Recorded via the mirroring feature.',
+        autoStart: true
+      })
+    }, 1000)
+  }
+
+  // Unified stop handler — works during the countdown (cancels) AND during
+  // active recording (SIGTERM → clean compile + save panel). Replaces the
+  // old "Cancel" button which didn't make clear it actually compiles+saves.
+  function stopRecording() {
+    if (!ipcRenderer) return
+    // Case 1: user is in the pre-recording countdown. Just cancel it.
+    if (_recordCountdownTimer) {
+      _recordCountdownCancelled = true
+      return
+    }
+    // Case 2: recorder is running. SIGTERM via main.js triggers a clean
+    // finalize inside recorder.py — the 'done' event follows with the
+    // compiled script and the save panel opens.
+    ipcRenderer.send('record-stop')
+    setRecordStatus('stopping...', false)
+  }
+  // Back-compat: some older inline handlers may still call cancelRecording.
+  function cancelRecording() { stopRecording() }
+
+  function slugify(s) {
+    return String(s || '').toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 48) || 'recorded_script'
+  }
+
+  if (ipcRenderer) {
+    ipcRenderer.on('record-event', function(event, evt) {
+      if (!evt) return
+      if (evt.event === 'ready') {
+        // With auto-start the 'ready' message is fleeting — 'started' arrives
+        // right after. Still show something so there's no blank state.
+        if (evt.autoStart) {
+          setRecordStatus('starting...', true)
+        } else {
+          setRecordStatus('press ' + String(evt.startHotkey || 'f9').toUpperCase() + ' to begin', true)
+        }
+      } else if (evt.event === 'started') {
+        var endKey = document.getElementById('record-end-hotkey').value
+        var label = String(endKey || 'f10').toUpperCase()
+        setRecordStatus('recording — click Stop or press ' + label, true)
+      } else if (evt.event === 'captured') {
+        // If this event replaces a previous click (e.g., double-click merge),
+        // keep the counter flat — the total number of actions in the compiled
+        // script hasn't increased.
+        if (!evt.replacesPrevious) {
+          var n = parseInt(document.getElementById('record-count').textContent, 10) || 0
+          document.getElementById('record-count').textContent = n + 1
+        }
+        document.getElementById('record-last').textContent = describeRecordedAction(evt.action)
+      } else if (evt.event === 'done') {
+        _recordedScript = evt.script
+        setRecordStatus('complete', false)
+        var actionCount = ((evt.script && evt.script.actions) || []).length
+        document.getElementById('record-saved-count').textContent = actionCount
+        var nameField = document.getElementById('record-name').value.trim()
+        var filenameInput = document.getElementById('record-save-filename')
+        filenameInput.value = slugify(nameField)
+        document.getElementById('record-save-description').value = ''
+        // Clear any stale "already named" message from a previous recording
+        // and wire the input so edits dismiss the message as the user types.
+        _clearRecordNameMsg()
+        filenameInput.oninput = _clearRecordNameMsg
+        document.getElementById('record-save-panel').style.display = 'block'
+        appendLog('done', '⏹ Recording finished — ' + actionCount + ' actions captured.')
+      } else if (evt.event === 'warning') {
+        // Non-fatal — recording continues. Usually means macOS hasn't granted
+        // Automation permission, so we can't detect app switches / file opens
+        // and the user will only see raw click + type steps. Surface it in the
+        // log and pop a one-time banner above the recording controls.
+        appendLog('warn', '⚠ ' + (evt.message || 'Recorder warning'))
+        showRecorderPermBanner(evt.message || 'WillettBot can\'t detect app switches or file opens right now.')
+      } else if (evt.event === 'automation_status') {
+        // Emitted once on recorder startup by the Automation probe in
+        // recorder.py. Tells us whether osascript calls will succeed BEFORE
+        // the user records anything — so we can surface a permission banner
+        // immediately instead of waiting for the half-broken experience to
+        // manifest (clicks recording, but no app-context detection).
+        //
+        // 'ok'     → just a quiet log line; everything works.
+        // 'denied' → macOS returned -1743; user must reset AppleEvents TCC.
+        // 'silent' → osascript ran but returned nothing (ghost TCC cache).
+        // 'timeout'→ probe is still waiting on the macOS prompt to be clicked.
+        // 'error'  → couldn't run /usr/bin/osascript at all.
+        var _s = evt.status || 'unknown'
+        if (_s === 'ok') {
+          appendLog('log', '✓ Automation probe ok — app-context detection active.')
+        } else {
+          // Build a detailed log line showing raw probe output so we can
+          // diagnose from the log on remote users' machines without needing
+          // to pull the file from ~/Library/Logs/WillettBot/automation.log.
+          var detail = 'Automation probe: ' + _s
+          if (evt.returncode !== null && evt.returncode !== undefined) detail += ' | rc=' + evt.returncode
+          if (evt.stdout) detail += ' | stdout=' + evt.stdout
+          if (evt.stderr) detail += ' | stderr=' + evt.stderr
+          appendLog('warn', '⚠ ' + detail)
+          if (_s === 'denied' || _s === 'silent' || _s === 'error') {
+            showRecorderPermBanner(evt.message ||
+              'Automation permission missing — app-context and folder-open detection are off.')
+          }
+        }
+      } else if (evt.event === 'error') {
+        setRecordStatus('error', false)
+        alert('Recorder error: ' + (evt.message || 'unknown'))
+      } else if (evt.event === 'exit') {
+        if (!_recordedScript) setRecordStatus('stopped', false)
+      }
+    })
+  }
+
+  // Show a dismissible amber banner at the top of the recorder view when
+  // the recorder emits a permission warning. Dedup: if a banner is already
+  // visible we keep the existing one rather than stacking.
+  function showRecorderPermBanner(msg) {
+    var view = document.getElementById('view-record') || document.getElementById('view-builder')
+    if (!view) return
+    if (document.getElementById('record-perm-banner')) return
+    var div = document.createElement('div')
+    div.id = 'record-perm-banner'
+    div.style.cssText =
+      'margin:0 0 16px;padding:12px 16px;background:rgba(240,165,0,0.1);' +
+      'border:1px solid rgba(240,165,0,0.35);border-radius:8px;' +
+      'color:var(--amber);font-size:12.5px;line-height:1.55;' +
+      'display:flex;gap:12px;align-items:flex-start'
+    div.innerHTML =
+      '<div style="flex:1">' + String(msg).replace(/</g, '&lt;') + '</div>' +
+      '<button style="background:transparent;border:1px solid currentColor;color:inherit;padding:4px 10px;border-radius:6px;cursor:pointer;font-size:11px" onclick="this.parentElement.remove()">Dismiss</button>'
+    var firstCard = view.querySelector('.form-card')
+    if (firstCard) firstCard.parentNode.insertBefore(div, firstCard)
+    else view.appendChild(div)
+  }
+
+  // Inline "already named" message helpers. Shown right below the filename
+  // input so the user sees the collision without a modal popup — and the save
+  // is blocked entirely until they rename (no more "oops I overwrote my old
+  // script" traps).
+  function _showRecordNameMsg(msg) {
+    var el = document.getElementById('record-save-name-msg')
+    if (!el) return
+    el.textContent = msg
+    el.style.display = 'block'
+  }
+  function _clearRecordNameMsg() {
+    var el = document.getElementById('record-save-name-msg')
+    if (!el) return
+    el.textContent = ''
+    el.style.display = 'none'
+  }
+
+  async function saveRecordedScript() {
+    if (!ipcRenderer || !_recordedScript) return
+    _clearRecordNameMsg()
+    var filenameInput = document.getElementById('record-save-filename')
+    var filename = filenameInput.value.trim()
+    var desc = document.getElementById('record-save-description').value.trim()
+    var displayName = document.getElementById('record-name').value.trim() || _recordedScript.name
+    if (!filename) {
+      _showRecordNameMsg('Please enter a filename.')
+      filenameInput.focus()
+      return
+    }
+    try {
+      var res = await ipcRenderer.invoke('save-recorded-script', {
+        filename: filename,
+        displayName: displayName,
+        description: desc || _recordedScript.description,
+        script: _recordedScript
+        // Note: no `overwrite` flag — duplicates are a hard stop, not a prompt.
+      })
+      if (res && res.ok) {
+        // Do the user-visible stuff FIRST so a downstream null-ref (e.g. in
+        // logActivity when the hub list isn't mounted) can't swallow the
+        // green toast and make the user think saving failed.
+        var savePanel = document.getElementById('record-save-panel')
+        if (savePanel) savePanel.style.display = 'none'
+        _recordedScript = null
+        // Clear the inputs so the next recording starts with empty fields.
+        filenameInput.value = ''
+        var descEl = document.getElementById('record-save-description')
+        if (descEl) descEl.value = ''
+        showToast('Saved script: ' + (displayName || res.filename) + ' ✓')
+        try { await loadScripts() } catch (e) { console.error('[loadScripts]', e) }
+        try { highlightSavedScript(res.filename) } catch (e) {}
+        try { appendLog('done', '💾 Saved recording as ' + res.filename) } catch (e) {}
+        try { logActivity('Script Builder', 'Recorded ' + res.filename) } catch (e) {}
+      } else if (res && res.conflict) {
+        // Don't offer overwrite — block until the user picks a new name.
+        _showRecordNameMsg('Already named — "' + (res.filename || filename) +
+                           '" exists. Rename to save.')
+        filenameInput.focus(); filenameInput.select()
+      } else {
+        _showRecordNameMsg((res && res.error) || 'Could not save.')
+      }
+    } catch (e) {
+      _showRecordNameMsg('Save failed: ' + e.message)
+    }
+  }
+
+  function discardRecordedScript() {
+    _recordedScript = null
+    document.getElementById('record-save-panel').style.display = 'none'
+    setRecordStatus('idle', false)
+  }
+
+  // ── TUTORIAL / ONBOARDING WALKTHROUGH ─────────────────────────────────
+  // Modal overlay that introduces the main parts of the app: the two
+  // presets (Auto Clicker, Send Gmail), the Script Builder / recording
+  // flow, and Favorites. Shown automatically the first time the hub
+  // becomes visible. Replayable any time from the "tour" link in the
+  // top-right status bar. Remembers "seen" via localStorage so it doesn't
+  // nag returning users.
+  var WB_TUTORIAL_SEEN_KEY = 'wb_tutorial_seen_v1'
+
+  var WB_TUTORIAL_STEPS = [
+    {
+      icon: '👋',
+      title: 'Welcome to WillettBot',
+      body: "WillettBot does the repetitive stuff on your Mac for you — clicking, typing, filling forms, sending emails. If you can do it once, WillettBot can do it a hundred times. Here's a quick tour of what's inside."
+    },
+    {
+      icon: '🖱️',
+      title: 'Preset: Auto Clicker',
+      body: "Need to click the same spot over and over? Open <b>Auto Clicker</b> from the hub. Pick where to click, how often, and for how long — WillettBot does the clicking for you. Great for games, refreshing pages, or anything with a lot of button-mashing."
+    },
+    {
+      icon: '✉️',
+      title: 'Preset: Send Gmail',
+      body: "Click <b>Send Gmail</b> on the hub, fill in who it's going to, a subject, and a body. WillettBot opens a new tab in your default browser with the email pre-filled in Gmail — you review it and press the blue Send button (or Cmd+Enter). No passwords, no middlemen, works in Chrome / Safari / Arc / whatever you use."
+    },
+    {
+      icon: '🧱',
+      title: 'Script Builder: record your own',
+      body: "For anything else, use the <b>Script Builder</b>. Click <b>Record</b>, do the thing once — click the buttons, type the text, open the files, whatever — then press <b>F10</b> to stop. WillettBot saves it as a reusable script you can replay anytime, and you can edit individual steps afterward too."
+    },
+    {
+      icon: '⭐',
+      title: 'Favorites',
+      body: "Click the <b>heart</b> on any script to pin it to your hub as a one-click shortcut. Great for the two or three scripts you use daily — no hunting through a list."
+    },
+    {
+      icon: '🚀',
+      title: "You're ready",
+      body: "That's the whole tour. Try clicking <b>Send Gmail</b> on the hub to see an automation in action, or jump into <b>Script Builder</b> and record something. You can replay this tour anytime using the <b>tour</b> link in the top-right. Tell Myles what's broken."
+    }
+  ]
+
+  var _wbTutorialStep = 0
+  var _wbTutorialInjected = false
+
+  function _wbInjectTutorialStyles() {
+    if (_wbTutorialInjected) return
+    _wbTutorialInjected = true
+    var style = document.createElement('style')
+    style.textContent = [
+      '#wb-tut-overlay {',
+      '  position: fixed; inset: 0; z-index: 99998;',
+      '  background: rgba(6, 4, 20, 0.78);',
+      '  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);',
+      '  display: flex; align-items: center; justify-content: center;',
+      '  animation: wbTutFade 0.25s ease-out;',
+      '}',
+      '@keyframes wbTutFade { from { opacity: 0 } to { opacity: 1 } }',
+      '#wb-tut-card {',
+      '  width: 520px; max-width: calc(100vw - 48px);',
+      '  background: linear-gradient(180deg, #1e1b38 0%, #16142a 100%);',
+      '  border: 1px solid rgba(124,106,255,0.45);',
+      '  border-radius: 16px; padding: 32px 32px 24px;',
+      '  color: #f5f3ff; font-family: -apple-system, BlinkMacSystemFont, sans-serif;',
+      '  box-shadow: 0 24px 60px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.03) inset;',
+      '  position: relative;',
+      '}',
+      '#wb-tut-skip {',
+      '  position: absolute; top: 14px; right: 16px;',
+      '  background: none; border: none; color: rgba(245,243,255,0.5);',
+      '  font-size: 12px; cursor: pointer; padding: 4px 8px;',
+      '  letter-spacing: 0.4px;',
+      '}',
+      '#wb-tut-skip:hover { color: #f5f3ff; }',
+      '.wb-tut-icon {',
+      '  font-size: 56px; line-height: 1; margin-bottom: 14px;',
+      '  filter: drop-shadow(0 4px 20px rgba(124,106,255,0.4));',
+      '}',
+      '.wb-tut-title {',
+      '  font-size: 22px; font-weight: 700; margin: 0 0 12px 0;',
+      '  letter-spacing: -0.3px;',
+      '}',
+      '.wb-tut-body {',
+      '  font-size: 14.5px; line-height: 1.55; color: rgba(245,243,255,0.85);',
+      '  margin: 0 0 24px 0;',
+      '}',
+      '.wb-tut-body b { color: #f5f3ff; font-weight: 600; }',
+      '.wb-tut-dots {',
+      '  display: flex; gap: 6px; justify-content: center;',
+      '  margin-bottom: 18px;',
+      '}',
+      '.wb-tut-dot {',
+      '  width: 7px; height: 7px; border-radius: 50%;',
+      '  background: rgba(245,243,255,0.2); transition: all 0.2s;',
+      '}',
+      '.wb-tut-dot.active {',
+      '  background: #7c6aff; width: 20px; border-radius: 4px;',
+      '}',
+      '.wb-tut-buttons {',
+      '  display: flex; justify-content: space-between; align-items: center;',
+      '  gap: 12px;',
+      '}',
+      '.wb-tut-btn {',
+      '  padding: 10px 20px; border-radius: 8px; font-size: 13.5px;',
+      '  font-weight: 600; cursor: pointer; border: none;',
+      '  font-family: inherit; letter-spacing: 0.2px;',
+      '  transition: transform 0.1s, background 0.15s;',
+      '}',
+      '.wb-tut-btn:active { transform: scale(0.97); }',
+      '.wb-tut-btn.primary {',
+      '  background: #7c6aff; color: white; flex: 1;',
+      '  box-shadow: 0 4px 16px rgba(124,106,255,0.35);',
+      '}',
+      '.wb-tut-btn.primary:hover { background: #8d7dff; }',
+      '.wb-tut-btn.ghost {',
+      '  background: transparent; color: rgba(245,243,255,0.7);',
+      '  border: 1px solid rgba(245,243,255,0.15);',
+      '}',
+      '.wb-tut-btn.ghost:hover {',
+      '  color: #f5f3ff; border-color: rgba(245,243,255,0.3);',
+      '}',
+      '.wb-tut-btn.ghost[disabled] { opacity: 0.3; cursor: default; }'
+    ].join('\n')
+    document.head.appendChild(style)
+  }
+
+  function _wbRenderTutorialStep() {
+    var card = document.getElementById('wb-tut-card')
+    if (!card) return
+    var step = WB_TUTORIAL_STEPS[_wbTutorialStep]
+    var isFirst = _wbTutorialStep === 0
+    var isLast  = _wbTutorialStep === WB_TUTORIAL_STEPS.length - 1
+    var dotsHtml = WB_TUTORIAL_STEPS.map(function(_, i) {
+      return '<span class="wb-tut-dot' + (i === _wbTutorialStep ? ' active' : '') + '"></span>'
+    }).join('')
+    card.innerHTML =
+      '<button id="wb-tut-skip" onclick="_wbFinishTutorial()">skip tour</button>' +
+      '<div class="wb-tut-icon">' + step.icon + '</div>' +
+      '<h2 class="wb-tut-title">' + step.title + '</h2>' +
+      '<p class="wb-tut-body">' + step.body + '</p>' +
+      '<div class="wb-tut-dots">' + dotsHtml + '</div>' +
+      '<div class="wb-tut-buttons">' +
+        '<button class="wb-tut-btn ghost"' + (isFirst ? ' disabled' : '') +
+          ' onclick="_wbTutorialBack()">Back</button>' +
+        '<button class="wb-tut-btn primary" onclick="_wbTutorialNext()">' +
+          (isLast ? "Let's go" : 'Next') + '</button>' +
+      '</div>'
+  }
+
+  function _wbTutorialNext() {
+    if (_wbTutorialStep >= WB_TUTORIAL_STEPS.length - 1) {
+      _wbFinishTutorial()
+    } else {
+      _wbTutorialStep++
+      _wbRenderTutorialStep()
+    }
+  }
+
+  function _wbTutorialBack() {
+    if (_wbTutorialStep > 0) {
+      _wbTutorialStep--
+      _wbRenderTutorialStep()
+    }
+  }
+
+  function _wbFinishTutorial() {
+    try { localStorage.setItem(WB_TUTORIAL_SEEN_KEY, '1') } catch (_) {}
+    var ov = document.getElementById('wb-tut-overlay')
+    if (ov && ov.parentNode) ov.parentNode.removeChild(ov)
+  }
+
+  function startTutorial() {
+    _wbInjectTutorialStyles()
+    _wbTutorialStep = 0
+    var existing = document.getElementById('wb-tut-overlay')
+    if (existing) existing.remove()
+    var overlay = document.createElement('div')
+    overlay.id = 'wb-tut-overlay'
+    overlay.innerHTML = '<div id="wb-tut-card"></div>'
+    document.body.appendChild(overlay)
+    _wbRenderTutorialStep()
+  }
+
+  function maybeShowTutorial() {
+    try {
+      if (localStorage.getItem(WB_TUTORIAL_SEEN_KEY)) return
+    } catch (_) {}
+    // Small delay so the hub renders first and the first step lands on a
+    // settled background instead of a mid-transition splash.
+    setTimeout(startTutorial, 450)
+  }
+
+  // Expose for the status-bar "tour" link.
+  window.startTutorial = startTutorial
+  window._wbTutorialNext = _wbTutorialNext
+  window._wbTutorialBack = _wbTutorialBack
+  window._wbFinishTutorial = _wbFinishTutorial
+</script>
+</body>
+</html>

@@ -1,0 +1,132 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>WillettBot</title>
+  <style>
+    /* ── Minimal macOS-style top-right confirmation toast ─────────────
+       No chrome, no icon, no app header. Just a message + two buttons.
+       Sits inside a frameless, transparent Electron BrowserWindow. */
+    :root {
+      --bg: rgba(40, 40, 44, 0.94);
+      --border: rgba(255, 255, 255, 0.10);
+      --text: #f6f6f7;
+      --btn-grey-bg: rgba(255, 255, 255, 0.10);
+      --btn-grey-hover: rgba(255, 255, 255, 0.18);
+      --btn-blue: #2a6df4;
+      --btn-blue-hover: #3e80ff;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: rgba(252, 252, 253, 0.97);
+        --border: rgba(0, 0, 0, 0.06);
+        --text: #1a1a1c;
+        --btn-grey-bg: rgba(0, 0, 0, 0.06);
+        --btn-grey-hover: rgba(0, 0, 0, 0.10);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      background: transparent;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      color: var(--text);
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+      cursor: default;
+    }
+
+    .toast {
+      position: fixed;
+      top: 10px; right: 10px; left: 10px; bottom: 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35),
+                  0 2px 8px rgba(0, 0, 0, 0.20);
+      backdrop-filter: blur(24px) saturate(140%);
+      -webkit-backdrop-filter: blur(24px) saturate(140%);
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 12px;
+      opacity: 0;
+      transform: translateX(14px);
+      animation: slidein 0.20s ease-out forwards;
+    }
+    @keyframes slidein {
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    .message {
+      font-size: 13px;
+      line-height: 1.40;
+      color: var(--text);
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow: auto;
+      letter-spacing: -0.005em;
+      flex: 1;
+    }
+    .message::-webkit-scrollbar { width: 4px; }
+    .message::-webkit-scrollbar-thumb { background: var(--btn-grey-bg); border-radius: 2px; }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      flex: none;
+    }
+    .btn {
+      padding: 7px 16px;
+      font: inherit; font-size: 13px; font-weight: 600;
+      border-radius: 8px;
+      border: 0;
+      color: var(--text);
+      cursor: pointer;
+      letter-spacing: -0.005em;
+    }
+    .btn.grey { background: var(--btn-grey-bg); }
+    .btn.grey:hover { background: var(--btn-grey-hover); }
+    .btn.blue { background: var(--btn-blue); color: white; }
+    .btn.blue:hover { background: var(--btn-blue-hover); }
+  </style>
+</head>
+<body>
+  <div class="toast">
+    <div class="message" id="msg">…</div>
+    <div class="actions">
+      <button class="btn grey" id="cancel-btn">Wait</button>
+      <button class="btn blue" id="continue-btn">Send</button>
+    </div>
+  </div>
+
+  <script>
+    const { ipcRenderer } = require('electron')
+
+    ipcRenderer.on('toast-init', (e, payload) => {
+      document.getElementById('msg').textContent = payload.message || ''
+      if (payload.confirmLabel) {
+        document.getElementById('continue-btn').textContent = payload.confirmLabel
+      }
+      if (payload.cancelLabel) {
+        document.getElementById('cancel-btn').textContent = payload.cancelLabel
+      }
+      // Primary-button focus so Enter = confirm, Esc = cancel.
+      setTimeout(() => { document.getElementById('continue-btn').focus() }, 40)
+    })
+
+    function respond(cancelled) { ipcRenderer.send('toast-response', { cancelled }) }
+    document.getElementById('continue-btn').addEventListener('click', () => respond(false))
+    document.getElementById('cancel-btn').addEventListener('click', () => respond(true))
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter')  { e.preventDefault(); respond(false) }
+      if (e.key === 'Escape') { e.preventDefault(); respond(true) }
+    })
+  </script>
+</body>
+</html>

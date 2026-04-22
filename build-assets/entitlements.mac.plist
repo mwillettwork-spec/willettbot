@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  WillettBot entitlements for Developer ID signing with Hardened Runtime.
+
+  Hardened Runtime is required for notarization, but it disables things an
+  Electron-plus-bundled-Python app needs. Every key below turns one of those
+  restrictions back off. We scope this to exactly what WillettBot actually
+  does — nothing more — so macOS Gatekeeper / notarization audits stay
+  uneventful.
+
+  What each key does:
+
+  allow-jit                        → lets V8 (Electron) and CPython generate
+                                     executable code at runtime. Electron
+                                     needs this; Python occasionally does too
+                                     (regex engine, ctypes trampolines).
+
+  allow-unsigned-executable-memory → Python dynamically loads .so extension
+                                     modules (pyautogui's Quartz bindings,
+                                     pynput's Cocoa bindings) that aren't
+                                     signed by Apple. Without this, those
+                                     .so loads get rejected at dlopen time.
+
+  allow-dyld-environment-variables → so the bundled Python honors
+                                     PYTHONHOME / DYLD_LIBRARY_PATH that
+                                     main.js sets when spawning the child
+                                     (otherwise the bundled interpreter can't
+                                     find its own stdlib relative to the .app).
+
+  disable-library-validation       → allows loading libraries signed by OTHER
+                                     Team IDs (the bundled Python framework
+                                     is signed by python.org's cert, not
+                                     ours). Without this, every Python
+                                     import from Resources/python/ fails.
+
+  automation.apple-events          → lets our process SEND AppleEvents
+                                     (osascript → System Events / Finder).
+                                     TCC still requires the user to grant
+                                     per-target permission, but this key is
+                                     the prerequisite.
+
+  Deliberately NOT present:
+    - app-sandbox (we're Developer-ID distributed, not App Store)
+    - network-client/server (we don't make outbound HTTP from the Python
+      child; Electron main does, but hardened runtime allows network by
+      default without sandbox)
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+</dict>
+</plist>
