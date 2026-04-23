@@ -1,6 +1,6 @@
 {
   "name": "willettbot",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "description": "Desktop automation for non-technical users — record, edit, and replay macros.",
   "main": "main.js",
   "author": {
@@ -67,32 +67,55 @@
       {
         "from": "scripts",
         "to": "scripts-seed",
-        "filter": ["**/*.json"]
+        "filter": [
+          "**/*.json"
+        ]
       },
       {
         "from": "bundled-python/python",
         "to": "python",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "build-assets/icon.png",
       "target": [
-        { "target": "dmg", "arch": ["x64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build-assets/entitlements.mac.plist",
       "entitlementsInherit": "build-assets/entitlements.mac.plist",
-      "notarize": {"teamId": "MP2LL5ZQC5"}
+      "notarize": {
+        "teamId": "MP2LL5ZQC5"
+      }
     },
     "dmg": {
       "title": "${productName} ${version}",
-      "window": { "width": 540, "height": 380 },
+      "window": {
+        "width": 540,
+        "height": 380
+      },
       "contents": [
-        { "x": 140, "y": 180, "type": "file" },
-        { "x": 400, "y": 180, "type": "link", "path": "/Applications" }
+        {
+          "x": 140,
+          "y": 180,
+          "type": "file"
+        },
+        {
+          "x": 400,
+          "y": 180,
+          "type": "link",
+          "path": "/Applications"
+        }
       ]
     },
     "publish": [
