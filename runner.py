@@ -201,11 +201,96 @@ def _raise_window_by_title(app_name, title):
         return False
 
 
+def _wait_until_frontmost(expected, timeout=1.2):
+    """Poll until `expected` is the frontmost app, or timeout. Returns True on
+    success. Used instead of a fixed sleep after `open -a` because app-launch
+    time varies hugely (cold-start Preview can take >1s; a warm Finder is
+    <50ms), and a fixed 0.35s sleep was both too slow (wasted time) and
+    sometimes too fast (clicks landing on a dialog's parent app before the
+    Window Server actually finished swapping focus)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _current_frontmost_app() == expected:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _activate_app_via_events(app_name):
+    """Force `app_name` frontmost using System Events. Stronger than `open -a`
+    when the app is already running but a modal sheet from another process
+    grabbed focus (e.g. a macOS 'Allow access' prompt from CoreServicesUIAgent
+    dims the target app's window). `tell application X to activate` walks
+    through the WindowServer's focus rules properly instead of relying on
+    launch-services heuristics."""
+    if not app_name:
+        return False
+    def esc(s): return s.replace('\\', '\\\\').replace('"', '\\"')
+    script = 'tell application "' + esc(app_name) + '" to activate'
+    try:
+        r = subprocess.run(['osascript', '-e', script],
+                           capture_output=True, text=True, timeout=2)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _focus_modal_sheet(app_name):
+    """If `app_name` has a modal sheet attached to any window, raise that
+    window so the sheet's buttons are clickable. macOS sheets (like the
+    'Keep Both / Replace' file-copy dialog) can't be AXRaised directly —
+    they're always attached to a parent window — but if the parent isn't
+    topmost, the sheet appears dimmed ("greyed out a lil bit") and clicks
+    may not register reliably. Returns True if a sheet was found + raised.
+
+    Bug this fixes: user records clicking "Replace" in a copy-dialog; on
+    replay, pyautogui fires a click at the recorded pixel, but between the
+    preceding action and the click the dialog's parent window lost focus
+    (e.g. Safari notification stole it), so the sheet is dimmed and the
+    button press doesn't fire."""
+    if not app_name:
+        return False
+    def esc(s): return s.replace('\\', '\\\\').replace('"', '\\"')
+    # Walk every window of the process; if it has a sheet, AXRaise it and
+    # make the process frontmost. Returns 'raised' on success, 'none' if no
+    # sheet was found, 'err:<msg>' on failure.
+    script = '\n'.join([
+        'tell application "System Events"',
+        '  tell process "' + esc(app_name) + '"',
+        '    try',
+        '      set frontmost to true',
+        '      repeat with w in (every window)',
+        '        if (count of sheets of w) > 0 then',
+        '          perform action "AXRaise" of w',
+        '          return "raised"',
+        '        end if',
+        '      end repeat',
+        '      return "none"',
+        '    on error errmsg',
+        '      return "err:" & errmsg',
+        '    end try',
+        '  end tell',
+        'end tell',
+    ])
+    try:
+        r = subprocess.run(['osascript', '-e', script],
+                           capture_output=True, text=True, timeout=2.5)
+        return r.returncode == 0 and (r.stdout or '').strip() == 'raised'
+    except Exception:
+        return False
+
+
 def _ensure_frontmost_app(action):
     """Refocus the expected app (and, if we have it, the expected window)
     before a click. Silent no-op if no hint on the action — or if we can't
     query osascript. Better a possibly-miss-clicked replay than an aborted
-    one."""
+    one.
+
+    Sheet-handling is important here: if the target app has a modal dialog
+    (the 'Replace / Keep Both' copy prompts, 'Allow access' permission
+    dialogs, save-file sheets, etc.) and something else is frontmost, the
+    dialog renders dimmed and clicks into it don't reliably fire. We detect
+    this case and explicitly raise the sheet's parent window."""
     expected = action.get('app')
     expected_title = action.get('window_title')
     if not expected and not expected_title:
@@ -214,12 +299,29 @@ def _ensure_frontmost_app(action):
     if expected and (not current or current != expected):
         emit({'event': 'log',
               'message': 'Refocusing ' + expected + ' (was ' + (current or '?') + ')'})
+        # Two-pronged activation: `open -a` (launches if not running) +
+        # AppleScript `activate` (stronger when the app is already running
+        # but loses focus to a modal sheet from another process).
         try:
             subprocess.run(['open', '-a', expected], check=False, timeout=3)
         except Exception:
             return
-        # Give the Window Server a beat to bring the app forward before we click.
-        time.sleep(0.35)
+        _activate_app_via_events(expected)
+        # Poll until the swap actually happens rather than sleeping blindly.
+        # 1.2s is generous enough for cold-start Preview / Calendar / etc.
+        if not _wait_until_frontmost(expected, timeout=1.2):
+            emit({'event': 'log',
+                  'message': 'Warning: ' + expected + ' did not come to '
+                             'front within 1.2s — clicking anyway.'})
+    # If the app is running but has a dimmed modal sheet, raising its parent
+    # window un-dims it so the click actually lands on a live button.
+    if expected:
+        if _focus_modal_sheet(expected):
+            emit({'event': 'log',
+                  'message': 'Raised modal dialog in ' + expected})
+            # Sheets animate in — a short settle keeps the click from racing
+            # the animation and landing on the parent window instead.
+            time.sleep(0.18)
     # Even if the app was already frontmost, try to raise the exact window.
     # Gracefully degrades when Accessibility isn't granted or title changed.
     if expected_title and expected:
@@ -279,11 +381,30 @@ def run_action(action, variables):
         if not is_url and not os.path.exists(path):
             raise FileNotFoundError('open_file: path does not exist: ' + path)
 
+        # ── DIRECTORY SAFETY NET ─────────────────────────────────────────
+        # Folders should ALWAYS go through Finder, never through an app hint.
+        # This prevents a nasty class of bug where the recorder accidentally
+        # stamped `app: "Google Chrome"` on a folder-open action (because
+        # Chrome happened to be frontmost when the poller sampled). On replay,
+        # `open -a "Google Chrome" /Users/mom/Desktop` cheerfully loads the
+        # folder as a file:// URL in a Chrome tab instead of opening Finder.
+        # Strip the hint, force inPlace, and let Finder do its job.
+        is_dir = (not is_url) and os.path.isdir(path)
+        if is_dir and app:
+            emit({'event': 'log',
+                  'message': 'Ignoring app hint "' + app + '" for folder — '
+                             'routing to Finder instead.'})
+            app = ''
+        if is_dir and not in_place:
+            # Default to inPlace for folders even if the action didn't say so.
+            # Spawns way fewer stray Finder windows on long scripts.
+            in_place = True
+
         # In-place Finder navigation: retarget the front window to the new
         # folder instead of spawning a new one. Only attempted for local
         # directories (URLs + files still use plain `open`). Falls back to
         # plain `open` if no Finder window exists or AppleScript fails.
-        if in_place and not is_url and os.path.isdir(path):
+        if in_place and is_dir:
             applescript = (
                 'tell application "Finder"\n'
                 '  activate\n'
@@ -401,8 +522,14 @@ def run_action(action, variables):
         pyautogui.dragTo(to_x, to_y, duration=duration, button=btn)
 
     elif kind == 'move_to':
-        pyautogui.moveTo(int(action['x']), int(action['y']),
-                         duration=float(action.get('duration', 0)))
+        # Ignore recorded `duration`: always teleport. Glides were the #1
+        # cause of "replay looks janky" — when the target window has moved
+        # since recording, the cursor glides visibly through empty space
+        # before the next click fires. Teleport is invisible and correct.
+        # The cursor still ends up at the recorded pixel so any downstream
+        # hover-sensitive UI (rare in automation scripts) still gets the
+        # right position before the next action runs.
+        pyautogui.moveTo(int(action['x']), int(action['y']), duration=0)
 
     elif kind == 'type':
         text = substitute(action.get('text', ''), variables)

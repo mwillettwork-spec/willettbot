@@ -12,3 +12,5 @@ package.json.bak2
 __pycache__/
 *.pyc
 .idea/
+
+package.json.bak3

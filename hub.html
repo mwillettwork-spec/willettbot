@@ -3649,13 +3649,33 @@
     el.style.display = 'none'
   }
 
+  // Turn "my_folder_opener" → "My Folder Opener" for use as a display name when
+  // the user didn't fill in the pre-recording name field. Strips .json if
+  // present, replaces _ and - with spaces, then title-cases. Returns '' for
+  // obviously-empty input so the caller can fall through to a real default.
+  function _prettifyFilename(fn) {
+    var s = String(fn || '').replace(/\.json$/i, '').replace(/[_\-]+/g, ' ').trim()
+    if (!s) return ''
+    return s.replace(/\b\w/g, function(c) { return c.toUpperCase() })
+  }
+
   async function saveRecordedScript() {
     if (!ipcRenderer || !_recordedScript) return
     _clearRecordNameMsg()
     var filenameInput = document.getElementById('record-save-filename')
     var filename = filenameInput.value.trim()
     var desc = document.getElementById('record-save-description').value.trim()
-    var displayName = document.getElementById('record-name').value.trim() || _recordedScript.name
+    // Display-name resolution priority:
+    //   1. The pre-recording "name" input, if the user filled it.
+    //   2. A prettified version of the save-panel FILENAME the user just
+    //      typed — this is the common case: people name their script in the
+    //      save panel, not the pre-record input, and before this fix those
+    //      scripts all saved with display name "Recorded Script".
+    //   3. Whatever the recorder compiled (default "Recorded Script").
+    var preRecName = document.getElementById('record-name').value.trim()
+    var displayName = preRecName
+      || _prettifyFilename(filename)
+      || _recordedScript.name
     if (!filename) {
       _showRecordNameMsg('Please enter a filename.')
       filenameInput.focus()

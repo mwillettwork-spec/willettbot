@@ -190,7 +190,17 @@ MOVE_DURATION_MAX        = 1.5    # seconds — cap any single glide so long pau
 # Context-polling (app switches + Finder navigation). Lets us replace raw
 # pixel clicks on dock icons / Finder folders with semantic focus_app /
 # open_file actions that actually work on replay.
-CONTEXT_POLL_INTERVAL    = 0.4    # seconds — how often to query macOS
+#
+# The poll interval is 0.2s — tighter than you might expect because missing
+# a Finder→Preview transition by 0.2s means the click never gets upgraded to
+# an open_file, and the script replays as a raw double_click at stored
+# coordinates (fragile as soon as window position changes). We also wake the
+# poller immediately after every click, plus once more ~0.35s later, to
+# catch app-launches that lag the click.
+CONTEXT_POLL_INTERVAL    = 0.2    # seconds — how often to query macOS
+CONTEXT_POST_CLICK_DELAY = 0.35   # seconds — schedule a second wake this far
+                                  #           after a click to catch slow app
+                                  #           launches (Preview, PDF viewers, etc.)
 CONTEXT_COALESCE_WINDOW  = 2.0    # seconds — a context event within this window
                                   #           of a click/hotkey REPLACES that click
                                   #           (rather than appending a new step)
@@ -234,6 +244,12 @@ class Recorder:
         # Horizontal-scroll accumulator for switch_desktop detection.
         self._hscroll_sum = 0.0             # signed dx sum over the active burst
         self._hscroll_last_ts = 0.0         # ts of most recent h-scroll event
+
+        # Wake signal for the context poller. on_click sets this so the
+        # poller re-samples immediately instead of sleeping out its 0.2s
+        # interval — closes the race where an app-launch triggered by the
+        # click would otherwise be missed on the next poll tick.
+        self._ctx_wake = threading.Event()
 
     # ── keyboard ─────────────────────────────────────────────────────────
     def on_key_press(self, key):
@@ -440,6 +456,50 @@ class Recorder:
             "x": px, "y": py,
             "button": btn_name
         }))
+        # Nudge the context poller to re-sample right now — catches
+        # Finder→Preview / Dock→app / folder-navigate transitions that
+        # happen within the 0.2s poll gap. A second nudge fires ~0.35s
+        # later to catch slow-launching apps.
+        self._kick_ctx_poll()
+
+    def _kick_ctx_poll(self):
+        """Signal the poll loop to re-sample immediately and schedule one
+        follow-up wake to cover apps that take a moment to launch after
+        their click was dispatched.
+
+        Also kicks off a synchronous-ish Finder-selection probe if the most
+        recent poll saw Finder frontmost. The poll thread only refreshes
+        `_ctx_prev_finder_sel` while Finder is active, so if a user clicks
+        fast enough that the subsequent poll finds Preview (not Finder)
+        frontmost, we'd lose the selection anchor and the file-open marker
+        would never fire. This background probe captures the selection
+        immediately, in parallel with whatever app-launch is happening —
+        whichever query returns first wins."""
+        self._ctx_wake.set()
+
+        def _delayed_wake():
+            time.sleep(CONTEXT_POST_CLICK_DELAY)
+            if not self.done_event.is_set():
+                self._ctx_wake.set()
+        threading.Thread(target=_delayed_wake, daemon=True).start()
+
+        # If the last observation was Finder, snapshot selection NOW in the
+        # background — osascript takes ~50ms, but so does app-launching, and
+        # we want whichever happens first to be this query. Guarded by the
+        # cached prev_app so we don't spam osascript on every click.
+        if self._ctx_prev_app == 'Finder':
+            def _probe_selection():
+                try:
+                    sel = self._query_finder_selection()
+                except Exception:
+                    sel = ''
+                if sel:
+                    self._ctx_prev_finder_sel = sel
+                # Also re-wake the poller once our probe returns, so the
+                # app-switch check runs with the freshest selection cached.
+                if not self.done_event.is_set():
+                    self._ctx_wake.set()
+            threading.Thread(target=_probe_selection, daemon=True).start()
 
     # ── internal ─────────────────────────────────────────────────────────
     def _record(self, ts, action):
@@ -612,11 +672,29 @@ class Recorder:
                 if (self._ctx_prev_app == 'Finder'
                         and app != 'Finder'
                         and self._ctx_prev_finder_sel):
-                    self._record_ctx(now, {
+                    # Folders should never inherit an app hint. If the user
+                    # double-clicked a folder in Finder and then Chrome (or
+                    # any other app) happened to momentarily come frontmost,
+                    # we'd otherwise stamp `app: "Chrome"` on an open_file
+                    # that points at a DIRECTORY. Replay would then run
+                    # `open -a Chrome /path/to/folder` which loads the folder
+                    # as a file:// URL in a Chrome tab. Bug seen in the wild.
+                    import os as _os
+                    sel = self._ctx_prev_finder_sel
+                    marker = {
                         "action": "__ctx_file_open__",
-                        "path": self._ctx_prev_finder_sel,
-                        "app":  app
-                    })
+                        "path": sel,
+                    }
+                    try:
+                        is_dir = _os.path.isdir(_os.path.expanduser(sel))
+                    except Exception:
+                        is_dir = False
+                    if is_dir:
+                        # Route through Finder, retarget existing window.
+                        marker['inPlace'] = True
+                    else:
+                        marker['app'] = app
+                    self._record_ctx(now, marker)
                 else:
                     self._record_ctx(now, {
                         "action": "__ctx_app__",
@@ -666,7 +744,12 @@ class Recorder:
                         })
                     self._ctx_prev_window_count[app] = wc
 
-            time.sleep(CONTEXT_POLL_INTERVAL)
+            # Sleep until either the interval elapses OR a click kicks us.
+            # Clearing afterward so the next pass starts with a fresh wake
+            # signal (click → set → wait returns → clear → loop → next wake
+            # can only come from the next click or the next interval).
+            self._ctx_wake.wait(CONTEXT_POLL_INTERVAL)
+            self._ctx_wake.clear()
 
     def compile(self):
         """Turn raw events into runner.py actions.
@@ -788,11 +871,15 @@ class Recorder:
             if kind == '__ctx_file_open__':
                 flush_text(ts)
                 # File opens (Finder → app) spawn a new window by design, so
-                # inPlace stays false here regardless of the helper default.
+                # inPlace stays false here regardless of the helper default
+                # — UNLESS the marker explicitly says otherwise, which is how
+                # the poll thread signals "this is a folder, use Finder."
                 new = {"action": "open_file", "path": action['path']}
                 # The "app" hint is preserved only if meaningful (not empty).
                 if action.get('app'):
                     new['app'] = action['app']
+                if action.get('inPlace'):
+                    new['inPlace'] = True
                 if not _replace_nearest(ts, ('double_click','click','press'), new):
                     maybe_wait(last_ts, ts)
                     actions.append(new); ts_per.append(ts)
@@ -853,7 +940,61 @@ class Recorder:
             last_ts = ts
 
         flush_text(last_ts)
-        return actions
+        return self._polish(actions)
+
+    def _polish(self, actions):
+        """Post-compile cleanup: strip cosmetic noise from the script.
+
+        Two rules, both safe:
+          1. Drop every `move_to`. The cursor still gets where it needs to
+             be because every click/drag specifies (x,y); the move_to
+             actions were only there to reproduce the user's mouse GLIDE
+             between meaningful events. On replay with a differently-laid-
+             out screen those glides visibly wander through empty space
+             before the next click fires, making the replay look janky
+             even when it's functionally correct. Teleporting is cleaner.
+          2. Drop `click` / `double_click` actions whose only purpose was
+             to trigger a semantic action that already follows them — the
+             classic case is a double-click on a Finder folder where the
+             context poller DID detect the navigation but the pixel-click
+             got left behind. If within the next 3 non-wait actions we see
+             an `open_file`, the click is redundant; drop it.
+
+        Rule 2 intentionally preserves clicks followed by NON-open_file
+        actions — those are real button-clicks inside apps (Calendar event,
+        Safari button, etc.) and we must not drop them.
+        """
+        # Rule 1: strip move_to.
+        stripped = [a for a in actions if a.get('action') != 'move_to']
+
+        # Rule 2: drop click/double_click superseded by a following open_file.
+        out = []
+        LOOKAHEAD = 4       # how far ahead to scan for a semantic action
+        LOOKAHEAD_NONWAIT = 3
+        for i, a in enumerate(stripped):
+            kind = a.get('action')
+            if kind in ('click', 'double_click'):
+                # Scan forward, skipping waits (they represent real pauses
+                # the user took between the click and whatever fired next).
+                seen_nonwait = 0
+                superseded_by = None
+                for j in range(i + 1, min(i + 1 + LOOKAHEAD, len(stripped))):
+                    b = stripped[j]
+                    bk = b.get('action')
+                    if bk == 'wait':
+                        continue
+                    seen_nonwait += 1
+                    if bk == 'open_file':
+                        superseded_by = b
+                        break
+                    if seen_nonwait >= LOOKAHEAD_NONWAIT:
+                        break
+                if superseded_by is not None:
+                    # Drop this click — the open_file that follows does
+                    # the real work and doesn't care where the cursor was.
+                    continue
+            out.append(a)
+        return out
 
 
 # Module-level helper used by _record_ctx to generate user-facing live events.
@@ -870,6 +1011,8 @@ def _friendly_context(marker):
         out = {"action": "open_file", "path": marker.get('path', '')}
         if marker.get('app'):
             out['app'] = marker['app']
+        if marker.get('inPlace'):
+            out['inPlace'] = True
         return out
     if kind == '__ctx_window_close__':
         return {"action": "hotkey", "keys": ["command", "w"]}
