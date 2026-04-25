@@ -33,7 +33,7 @@ import signal
 import subprocess
 
 
-# ── AUTOMATION-PERMISSION STARTUP PROBE ─────────────────────────────────────
+# PLATFORM:macOS — AUTOMATION-PERMISSION STARTUP PROBE ───────────────────────
 # Runs ONCE before listeners start. The macOS Automation prompt for System
 # Events fires on the FIRST AppleEvent, so triggering it synchronously up
 # front makes sure we either get a clear grant (prompt → user approves),
@@ -45,6 +45,10 @@ import subprocess
 # Long timeout (10s) because the macOS prompt BLOCKS osascript until the
 # user clicks Allow/Don't Allow. Anything under ~6s risks timing out while
 # the user is still reading the dialog.
+#
+# WIN-PORT: Windows has no equivalent permission gate for input automation —
+# this whole probe can be skipped. Replace the body with `return {'status':
+# 'ok', ...}` when sys.platform == 'win32'.
 def probe_automation_permission():
     """Runs a synchronous AppleEvent probe at /usr/bin/osascript and returns
     a dict describing what happened so the UI can show precise diagnostic
@@ -511,6 +515,31 @@ class Recorder:
             self.events.append((ts, action))
         emit({"event": "captured", "action": action})
 
+    # ═════════════════════════════════════════════════════════════════════
+    # ═════════════ PLATFORM-SPECIFIC SECTION: macOS ══════════════════════
+    # ═════════════════════════════════════════════════════════════════════
+    #
+    # Every `_query_*` and `_osascript` classmethod below uses macOS-only
+    # AppleScript / System Events APIs. The Windows port replaces this whole
+    # block with UIAutomation / pywin32 equivalents. The PUBLIC names stay
+    # the same so _ctx_poll_loop() doesn't change:
+    #
+    #   _query_frontmost_app()            -> str  (app name)
+    #   _query_frontmost_window_title()   -> str
+    #   _query_finder_front_path()        -> str  (or _query_explorer_front_path on Win)
+    #   _query_finder_selection()         -> str
+    #   _query_window_count(app)          -> int | None
+    #
+    # Windows port notes:
+    #   - Frontmost app: win32gui.GetForegroundWindow() + GetWindowText.
+    #   - Window title: GetWindowText on the foreground hwnd.
+    #   - Explorer front path: Shell.Application COM, iterate .Windows() looking
+    #     for IShellBrowser instances, get LocationURL, parse to filesystem path.
+    #   - Explorer selection: same Shell.Application COM, .Document.SelectedItems.
+    #   - Window count: EnumWindows + filter by process ID matching app.
+    #
+    # ═════════════════════════════════════════════════════════════════════
+
     # ── context polling (app switches + Finder nav) ──────────────────────
     # These helpers are called by the background _ctx_poll_loop thread. They
     # store raw "__ctx_*__" markers in self.events that compile() rewrites
@@ -631,6 +660,10 @@ class Recorder:
             return int(out)
         except ValueError:
             return None
+
+    # ═════════════════════════════════════════════════════════════════════
+    # ═══════════ END PLATFORM-SPECIFIC SECTION (macOS) ═══════════════════
+    # ═════════════════════════════════════════════════════════════════════
 
     def _record_ctx(self, ts, marker):
         """Store a context marker AND emit a user-friendly live event."""

@@ -134,6 +134,36 @@ def substitute(value, variables):
     return value
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════ PLATFORM-SPECIFIC SECTION: macOS ═══════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Every helper between this banner and the matching "END PLATFORM-SPECIFIC"
+# banner below uses macOS-only APIs (osascript / AppleScript / `open`).
+# When porting to Windows / Linux, replace this entire section with platform
+# equivalents — the public function signatures and return shapes are stable
+# so callers in run_action() don't need to change.
+#
+# Public surface of this section (keep these names + signatures on every port):
+#   _current_frontmost_app() -> str                 # name of frontmost app
+#   _raise_window_by_title(app, title) -> bool      # raise window by title prefix
+#   _wait_until_frontmost(expected, timeout) -> bool# poll until app is frontmost
+#   _activate_app_via_events(app) -> bool           # force app to front
+#   _focus_modal_sheet(app) -> bool                 # un-dim a modal dialog
+#   _ensure_frontmost_app(action)                   # called before every click
+#
+# Windows port notes (for next-week work):
+#   - `osascript` calls → use pywin32 (win32gui, win32process) or UIAutomation.
+#   - `open -a "<App>"` → use `os.startfile()` for files, or
+#     subprocess.Popen(['cmd', '/c', 'start', '', appname]) for apps.
+#   - Frontmost detection: win32gui.GetForegroundWindow() +
+#     win32process.GetWindowThreadProcessId().
+#   - Window raising: win32gui.SetForegroundWindow() (with the AttachThreadInput
+#     dance for reliability across processes — Windows fights you on this).
+#   - Modal sheets don't exist on Windows — dialogs are separate windows.
+#     _focus_modal_sheet() can no-op there.
+# ═════════════════════════════════════════════════════════════════════════════
+
 # ── FRONTMOST-APP GUARD ──────────────────────────────────────────────────────
 # Recorded clicks carry an optional `app` hint (the app that was frontmost
 # when the user clicked). On replay, if something else is frontmost — because
@@ -336,6 +366,11 @@ def _ensure_frontmost_app(action):
             time.sleep(0.12)
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# ══════════════════ END PLATFORM-SPECIFIC SECTION (macOS) ════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
+
+
 # ── ACTION DISPATCH ──────────────────────────────────────────────────────────
 
 def run_action(action, variables):
@@ -356,10 +391,10 @@ def run_action(action, variables):
 
     elif kind == 'open_app' or kind == 'focus_app':
         name = substitute(action.get('name', ''), variables)
-        # macOS: `open -a "AppName"` launches the app OR brings it to the front
-        # if it's already running. So this action works for both "open" and
-        # "re-focus" use cases — you typically call it a second time right after
-        # a prompt to return keyboard focus from WillettBot to the target app.
+        # PLATFORM:macOS — `open -a "AppName"` launches the app OR brings it to
+        # the front if running. Works for both "open" and "re-focus" use cases.
+        # WIN-PORT: replace with subprocess.Popen(['cmd','/c','start','',name])
+        # for launching, plus pywin32 SetForegroundWindow for re-focus.
         subprocess.run(['open', '-a', name], check=False)
 
     elif kind == 'open_file':
@@ -404,10 +439,15 @@ def run_action(action, variables):
             # Spawns way fewer stray Finder windows on long scripts.
             in_place = True
 
-        # In-place Finder navigation: retarget the front window to the new
-        # folder instead of spawning a new one. Only attempted for local
-        # directories (URLs + files still use plain `open`). Falls back to
-        # plain `open` if no Finder window exists or AppleScript fails.
+        # PLATFORM:macOS — In-place Finder navigation: retarget the front
+        # window to the new folder instead of spawning a new one. Only
+        # attempted for local directories (URLs + files still use plain
+        # `open`). Falls back to plain `open` if no Finder window exists or
+        # AppleScript fails.
+        # WIN-PORT: equivalent is the Shell.Application COM object's Windows
+        # collection — iterate, find the front Explorer window, set its
+        # Navigate2 to the new path. Or just call os.startfile(path) which
+        # opens a new Explorer window every time (less polished UX).
         if in_place and is_dir:
             applescript = (
                 'tell application "Finder"\n'
@@ -467,12 +507,15 @@ def run_action(action, variables):
         raise TimeoutError('Timed out waiting for "' + target + '" to be frontmost.')
 
     elif kind == 'applescript':
-        # Run an AppleScript via osascript. Way more reliable than simulated
-        # keystrokes for Mac-app automation (new tabs, window ordering, etc.)
-        # Script can be a single string or a list of lines. Variables are
-        # substituted in first. Use the "|json" filter when injecting values
-        # into string literals so quotes and newlines are escaped properly:
+        # PLATFORM:macOS — Run an AppleScript via osascript. Way more reliable
+        # than simulated keystrokes for Mac-app automation (new tabs, window
+        # ordering, etc.). Script can be a single string or a list of lines.
+        # Variables are substituted in first. Use the "|json" filter when
+        # injecting values into string literals so quotes and newlines are
+        # escaped properly:
         #   "make new tab with properties {URL:\"{{url|json}}\"}"
+        # WIN-PORT: add a parallel `powershell` action with the same shape;
+        # this `applescript` action stays Mac-only and would error on Windows.
         raw = action.get('script', '')
         if isinstance(raw, list):
             raw = '\n'.join(str(x) for x in raw)
@@ -597,7 +640,14 @@ def run_action(action, variables):
 def _has_accessibility():
     """True iff this python binary is granted Accessibility (can post mouse/
     keyboard events). Without this, pyautogui calls silently no-op. Returns
-    None on platforms where we can't probe (treated as ok by the caller)."""
+    None on platforms where we can't probe (treated as ok by the caller).
+
+    PLATFORM:macOS — uses Apple's ApplicationServices framework + AXIsProcessTrusted.
+    WIN-PORT: Windows has no equivalent permission gate — input simulation
+    works without a TCC-style grant. Return None on Windows so the caller
+    skips the warning. (Linux: similar — just return None.)"""
+    if sys.platform != 'darwin':
+        return None
     try:
         import ctypes, ctypes.util
         lib = ctypes.CDLL(ctypes.util.find_library('ApplicationServices'))
