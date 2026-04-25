@@ -785,8 +785,11 @@ ipcMain.on('clicker-stop', (event) => {
 })
 
 // ── MISC: open an external URL in the user's default browser ──
+// Allowlist on URL schemes so a compromised renderer can't spawn a file://
+// or javascript: handler. http/https + mailto are the only schemes the UI
+// actually needs (links inside Privacy/Terms, the footer Contact link, etc.).
 ipcMain.on('open-external-url', (event, url) => {
-  if (typeof url === 'string' && /^https?:\/\//.test(url)) {
+  if (typeof url === 'string' && /^(https?:\/\/|mailto:)/.test(url)) {
     shell.openExternal(url).catch(err => console.error('[open-external]', err))
   }
 })
@@ -901,6 +904,27 @@ ipcMain.on('reveal-python-binary', async () => {
     shell.showItemInFolder(py)
   } catch (e) {
     console.error('[reveal-python]', e)
+  }
+})
+
+// ── LEGAL DOCUMENTS IPC ──
+// Renderer asks for PRIVACY.md or TERMS.md content; we read from the
+// packaged app (next to main.js inside app.asar). Returns the raw markdown
+// string so the hub can render it in a modal. We don't render server-side
+// to keep the surface tiny — the hub has its own simple Markdown converter.
+ipcMain.handle('legal-doc', async (event, which) => {
+  try {
+    // Tight allowlist on `which` so a compromised renderer can't ask us to
+    // read arbitrary files via this channel. Two known docs only.
+    const allowed = { privacy: 'PRIVACY.md', terms: 'TERMS.md' }
+    const filename = allowed[String(which || '').toLowerCase()]
+    if (!filename) return { ok: false, error: 'unknown document' }
+    const full = path.join(__dirname, filename)
+    if (!fs.existsSync(full)) return { ok: false, error: 'document missing from build' }
+    const content = fs.readFileSync(full, 'utf8')
+    return { ok: true, filename: filename, content: content }
+  } catch (e) {
+    return { ok: false, error: e.message }
   }
 })
 
@@ -1171,6 +1195,20 @@ ipcMain.on('script-prompt-response', (event, response) => {
     scriptProc.stdin.write(JSON.stringify(response) + '\n')
   } catch (e) {
     console.error('[script-prompt-response] write failed:', e)
+  }
+})
+
+// ── SCRIPTS: forward a step-error recovery decision (skip / retry / stop) ──
+// Same wire shape as script-prompt-response — payload must contain `id`
+// matching the err_id the runner emitted in `step-error`, plus a `choice`
+// field set to one of 'skip' | 'retry' | 'stop'. The runner's wait_for_response
+// keys off `id` regardless of channel so this just slots in.
+ipcMain.on('script-step-error-response', (event, response) => {
+  if (!scriptProc || !scriptProc.stdin || scriptProc.stdin.destroyed) return
+  try {
+    scriptProc.stdin.write(JSON.stringify(response) + '\n')
+  } catch (e) {
+    console.error('[script-step-error-response] write failed:', e)
   }
 })
 

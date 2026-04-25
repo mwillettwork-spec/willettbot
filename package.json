@@ -49,6 +49,8 @@
       "permcheck.py",
       "licensing/public_key.pem",
       "licensing/keygen.js",
+      "PRIVACY.md",
+      "TERMS.md",
       "node_modules/**/*",
       "package.json",
       "!**/__pycache__/**",

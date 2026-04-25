@@ -93,6 +93,62 @@ def wait_for_response(prompt_id, timeout=600):
     return None
 
 
+# ── FRIENDLY-ERROR TRANSLATOR ───────────────────────────────────────────────
+# Turn raw Python exceptions into one-sentence explanations a non-technical
+# user can act on. The recovery modal shows BOTH the friendly message and
+# the original exception text — friendly is the headline, raw is the detail
+# the user can copy-paste back to support if they need to.
+
+def _friendly_error_message(exc, action):
+    """Best-effort plain-English description of why the step failed."""
+    raw = str(exc)
+    kind = action.get('action', 'step')
+
+    # FileNotFoundError — most common, fires from open_file when a recorded
+    # path is gone. Mom moves files around constantly; this is the #1 cause
+    # of broken replays.
+    if isinstance(exc, FileNotFoundError):
+        # The exception text usually already contains the path; pull it out.
+        path = ''
+        if 'path does not exist:' in raw:
+            path = raw.split('path does not exist:', 1)[1].strip()
+        if path:
+            return ("Couldn't find '" + path + "'. The file or folder may have "
+                    "been moved, renamed, or deleted since this script was "
+                    "recorded.")
+        return "Couldn't find a file or folder this step was supposed to open."
+
+    if isinstance(exc, TimeoutError):
+        if kind == 'wait_for_app':
+            return ("The app this script was waiting for never came to the "
+                    "front. It might not be installed, or it took too long "
+                    "to launch.")
+        if kind == 'prompt':
+            return "Nobody responded to a prompt for 10 minutes."
+        return "This step took too long to complete and timed out."
+
+    if isinstance(exc, RuntimeError):
+        if 'open_file failed' in raw:
+            return ("Couldn't open that file. The default app may be missing, "
+                    "or the file format isn't supported.")
+        if 'AppleScript failed' in raw or 'osascript' in raw:
+            return ("An automation step against another app didn't work. "
+                    "macOS may have revoked Automation permission for that "
+                    "app — check System Settings → Privacy & Security → "
+                    "Automation.")
+        if 'cancelled at prompt' in raw:
+            return "You cancelled at a prompt earlier."
+
+    if isinstance(exc, ValueError):
+        if kind == 'hotkey' and 'keys' in raw:
+            return ("This hotkey step is missing the keys to press. The "
+                    "script may have been edited incorrectly.")
+        return "This step's settings look wrong: " + raw
+
+    # Catch-all — show the exception type + message.
+    return type(exc).__name__ + ': ' + raw
+
+
 # ── VARIABLE SUBSTITUTION ────────────────────────────────────────────────────
 # Supports:
 #   {{name}}         raw value (no transform)
@@ -691,15 +747,54 @@ def run_script(script):
 
     emit({'event': 'script-start', 'name': name, 'total': len(actions)})
 
-    for i, action in enumerate(actions):
+    i = 0
+    while i < len(actions):
+        action = actions[i]
         emit({'event': 'step', 'index': i, 'action': action.get('action'),
               'label': action.get('label') or action.get('action')})
         try:
             run_action(action, variables)
+            i += 1
         except pyautogui.FailSafeException:
+            # User moved the cursor to a screen corner — explicit "abort"
+            # signal. No recovery dialog: this is them telling us to stop.
             emit({'event': 'failsafe', 'index': i})
             return
         except Exception as e:
+            # Step failed. Instead of dying with a traceback, ask the user
+            # what to do — skip, retry, or stop. The hub renders a friendly
+            # modal; the choice comes back over stdin (same channel the
+            # `prompt` action already uses for input). If no decision
+            # arrives within 15 minutes (e.g. App was closed), default to
+            # 'stop' so we don't leak a hung subprocess forever.
+            err_id = str(uuid.uuid4())
+            emit({
+                'event': 'step-error',
+                'id': err_id,
+                'index': i,
+                'action': action.get('action'),
+                'label': action.get('label') or action.get('action'),
+                'message': str(e),
+                'friendly': _friendly_error_message(e, action),
+                'trace': traceback.format_exc()
+            })
+            response = wait_for_response(err_id, timeout=900)
+            choice = (response or {}).get('choice', 'stop')
+            if choice == 'skip':
+                emit({'event': 'log',
+                      'message': '⏭ Skipped step ' + str(i + 1) + ' — continuing.'})
+                i += 1
+                continue
+            if choice == 'retry':
+                emit({'event': 'log',
+                      'message': '↻ Retrying step ' + str(i + 1) + '…'})
+                # Don't increment i — the while-loop runs the same action
+                # again. The friendly retry usually only helps for transient
+                # failures (app wasn't focused yet, file is being downloaded,
+                # network blip); persistent errors will just fail again and
+                # the user sees the recovery modal a second time.
+                continue
+            # Default / explicit 'stop'.
             emit({
                 'event': 'error',
                 'index': i,
