@@ -51,6 +51,7 @@
       "licensing/keygen.js",
       "PRIVACY.md",
       "TERMS.md",
+      "NOTICES.md",
       "node_modules/**/*",
       "package.json",
       "!**/__pycache__/**",

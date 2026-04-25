@@ -1317,6 +1317,8 @@
         ·
         <a href="#" onclick="event.preventDefault(); openLegalDoc('terms')" style="color:var(--text2);text-decoration:underline">Terms</a>
         ·
+        <a href="#" onclick="event.preventDefault(); openLegalDoc('notices')" style="color:var(--text2);text-decoration:underline">Notices</a>
+        ·
         <a href="#" onclick="event.preventDefault(); _openExternal('mailto:mwillettwork@gmail.com')" style="color:var(--text2);text-decoration:underline">Contact</a>
       </div>
     </main>
@@ -3975,8 +3977,8 @@
   var _legalDocCache = {}
 
   async function openLegalDoc(which) {
-    var titles = { privacy: 'Privacy Policy', terms: 'Terms of Use' }
-    var subs   = { privacy: 'How we handle your data', terms: 'Your agreement when using WillettBot' }
+    var titles = { privacy: 'Privacy Policy', terms: 'Terms of Use', notices: 'Open-Source Notices' }
+    var subs   = { privacy: 'How we handle your data', terms: 'Your agreement when using WillettBot', notices: 'Third-party components & licenses' }
     var title  = titles[which] || 'Document'
     var sub    = subs[which]   || 'WillettBot'
     var contentEl = document.getElementById('legal-modal-content')

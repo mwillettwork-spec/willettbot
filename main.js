@@ -915,8 +915,8 @@ ipcMain.on('reveal-python-binary', async () => {
 ipcMain.handle('legal-doc', async (event, which) => {
   try {
     // Tight allowlist on `which` so a compromised renderer can't ask us to
-    // read arbitrary files via this channel. Two known docs only.
-    const allowed = { privacy: 'PRIVACY.md', terms: 'TERMS.md' }
+    // read arbitrary files via this channel. Three known docs only.
+    const allowed = { privacy: 'PRIVACY.md', terms: 'TERMS.md', notices: 'NOTICES.md' }
     const filename = allowed[String(which || '').toLowerCase()]
     if (!filename) return { ok: false, error: 'unknown document' }
     const full = path.join(__dirname, filename)
