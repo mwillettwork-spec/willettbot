@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 Myles Willett. All rights reserved.
+// Proprietary and confidential. No reproduction, distribution, or use
+// without express written permission.
+//
 // WillettBot license tooling — Ed25519-signed activation keys.
 //
 // Subcommands:

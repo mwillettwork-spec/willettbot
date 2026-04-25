@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Myles Willett. All rights reserved.
+// Proprietary and confidential. No reproduction, distribution, or use
+// without express written permission.
+
 const { ipcRenderer } = require('electron')
 
 document.getElementById('root').innerHTML = `

@@ -14,7 +14,7 @@
     "prepare-python": "bash scripts-build/prepare-python.sh",
     "strip-xattrs": "xattr -cr node_modules/electron 2>/dev/null || true",
     "clean-dist": "rm -rf dist-app",
-    "dist": "npm run clean-dist && npm run strip-xattrs && npm run prepare-python && electron-builder --mac --x64",
+    "dist": "npm run clean-dist && npm run strip-xattrs && npm run prepare-python && electron-builder --mac --x64 --publish always",
     "dist:dmg": "npm run clean-dist && npm run strip-xattrs && npm run prepare-python && electron-builder --mac dmg",
     "pack": "npm run clean-dist && npm run strip-xattrs && npm run prepare-python && electron-builder --dir"
   },

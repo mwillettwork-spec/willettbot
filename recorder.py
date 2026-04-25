@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Myles Willett. All rights reserved.
+# Proprietary and confidential. No reproduction, distribution, or use
+# without express written permission.
+
 """
 WillettBot Script Recorder
 ==========================

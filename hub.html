@@ -1,4 +1,9 @@
 <!DOCTYPE html>
+<!--
+  Copyright (c) 2026 Myles Willett. All rights reserved.
+  Proprietary and confidential. No reproduction, distribution, or use
+  without express written permission.
+-->
 <html>
 <head>
   <meta charset="UTF-8"/>
@@ -1412,6 +1417,15 @@
           <div style="font-size:13px;color:var(--text2);line-height:1.5;margin-bottom:16px">
             Pick your hotkeys, click Start, then do the thing you want to automate — clicks, typing, and keystrokes are captured in real time. Press your <strong>end hotkey</strong> to finish, then review and save.
           </div>
+          <!-- Privacy warning: WillettBot captures every keystroke including
+               anything typed into password fields. Users need to understand
+               this before they hit Start, not after. -->
+          <div style="font-size:13px;color:#ffdede;line-height:1.5;margin-bottom:16px;padding:12px 14px;background:rgba(220,45,60,0.12);border-left:4px solid #e04a5a;border-radius:8px">
+            <strong style="color:#ff9aa5">⚠ Privacy warning</strong>
+            <div style="margin-top:4px">
+              WillettBot records <em>every</em> keystroke while recording is active — including anything you type into password, credit-card, or other personal-info fields. <strong>Do not record yourself logging into any website or app.</strong> Stop recording first, log in manually, then start a new recording from after the login screen.
+            </div>
+          </div>
           <div style="font-size:12px;color:var(--text3);line-height:1.5;margin-bottom:16px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px">
             <strong style="color:var(--text2)">First time recording?</strong> macOS will ask for permission to watch your keystrokes <em>and</em> to control Finder / System Events / any apps you use — click <em>OK</em> on every prompt. If you miss one, you can re-enable it in <em>System Settings → Privacy &amp; Security → Automation</em>. Without Automation permission the recorder only captures raw clicks, not app switches or file opens.
           </div>
@@ -1456,6 +1470,13 @@
             <div><span>Status</span><strong id="record-status-text">idle</strong></div>
             <div><span>Captured</span><strong id="record-count">0</strong></div>
             <div><span>Last</span><strong id="record-last">—</strong></div>
+          </div>
+
+          <!-- Live privacy reminder. Hidden by default; setRecordStatus() flips
+               display when the recorder is active so the warning is visible at
+               the exact moment the user might type something sensitive. -->
+          <div id="record-live-warn" style="display:none;margin-top:10px;padding:8px 12px;font-size:12px;color:#ffcfd5;background:rgba(220,45,60,0.10);border-left:3px solid #e04a5a;border-radius:6px">
+            🔴 Recording — don't type passwords or personal info. Stop recording before any login screen.
           </div>
 
           <div id="record-save-panel" style="display:none;margin-top:14px;padding:16px;background:var(--surface);border:1px solid var(--accent);border-radius:10px">
@@ -3419,6 +3440,11 @@
     document.getElementById('record-status-text').textContent = text
     document.getElementById('record-start-btn').disabled = !!running
     document.getElementById('record-cancel-btn').disabled = !running
+    // Live privacy warning visibility mirrors the recording state so users
+    // see it at the exact moment they might type a password. Hiding on
+    // stop also keeps the post-recording save panel from looking alarming.
+    var warn = document.getElementById('record-live-warn')
+    if (warn) warn.style.display = running ? 'block' : 'none'
   }
 
   function describeRecordedAction(a) {
