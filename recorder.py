@@ -240,11 +240,22 @@ class Recorder:
                                             # (drops → user closed a window)
         self._ctx_window_drop_pending = {}  # app-name → consecutive polls
                                             # we've seen the count BELOW the
-                                            # baseline. Required to be ≥2
+                                            # baseline. Required to be ≥3
                                             # before we commit a close event,
                                             # so transient flickers (tooltips,
-                                            # modal dismiss animations, etc.)
-                                            # don't fire bogus Cmd+W hotkeys.
+                                            # modal dismiss animations, rapid
+                                            # finder navigation) don't fire
+                                            # bogus Cmd+W / Ctrl+W hotkeys.
+        self._ctx_last_fm_nav_ts = 0.0      # timestamp of the most recent
+                                            # __ctx_finder_nav__ emission. Used
+                                            # to freeze close-detection on the
+                                            # file manager during rapid folder
+                                            # drilling — Finder/Explorer's
+                                            # window count can briefly look
+                                            # like it dropped to 0 during the
+                                            # transition between two folders,
+                                            # and that was producing phantom
+                                            # Cmd+W events in the wild.
 
         # Horizontal-scroll accumulator for switch_desktop detection.
         self._hscroll_sum = 0.0             # signed dx sum over the active burst
@@ -667,20 +678,32 @@ class Recorder:
                     # as a file:// URL in a Chrome tab. Bug seen in the wild.
                     import os as _os
                     sel = self._ctx_prev_finder_sel
-                    marker = {
-                        "action": "__ctx_file_open__",
-                        "path": sel,
-                    }
                     try:
                         is_dir = _os.path.isdir(_os.path.expanduser(sel))
                     except Exception:
                         is_dir = False
                     if is_dir:
-                        # Route through the file manager, retarget existing window.
-                        marker['inPlace'] = True
+                        # The "selection" is the folder the user navigated
+                        # INTO — they were browsing, not opening a file with
+                        # another app. The folder nav itself was already
+                        # captured by __ctx_finder_nav__, so emitting a
+                        # redundant __ctx_file_open__ here would produce a
+                        # phantom "open_file inPlace" duplicate AND swallow
+                        # the actual app-switch we want recorded. Treat this
+                        # as a normal app switch instead.
+                        self._record_ctx(now, {
+                            "action": "__ctx_app__",
+                            "name":  app
+                        })
                     else:
-                        marker['app'] = app
-                    self._record_ctx(now, marker)
+                        # Real file open — file selected in FM, then user
+                        # switched apps. The destination app gets stamped
+                        # so replay opens the file with the right app.
+                        self._record_ctx(now, {
+                            "action": "__ctx_file_open__",
+                            "path": sel,
+                            "app": app,
+                        })
                 else:
                     self._record_ctx(now, {
                         "action": "__ctx_app__",
@@ -712,44 +735,69 @@ class Recorder:
                             "path":    fpath,
                             "inPlace": True
                         })
+                        # Mark that the file manager just navigated. We freeze
+                        # close-detection on the FM for ~1.5s after each nav
+                        # because Finder's `count of windows` (and Explorer's
+                        # equivalent) can briefly read low during the moment
+                        # one folder view is replaced by another, producing a
+                        # phantom window-close → phantom Cmd+W hotkey.
+                        self._ctx_last_fm_nav_ts = now
                     self._ctx_prev_finder_path = fpath
                 sel = self._query_finder_selection()
                 if sel:
                     self._ctx_prev_finder_sel = sel
 
             # Window-close detection: if the window count for the frontmost
-            # app drops AND stays dropped across the next poll, the user
-            # really X'd out a window (vs. a transient flicker — tooltips,
-            # transient panels, modal sheets opening/closing, system HUDs,
-            # etc., all cause brief window-count blips on both Mac and
-            # Windows). One-poll detection produced false positives that
-            # showed up as random Cmd+W / Ctrl+W hotkey events sprinkled
-            # through recordings. Require TWO consecutive polls below the
-            # previous high-water mark before committing to a close event.
+            # app drops AND stays dropped across THREE consecutive polls
+            # (~0.6s), the user really X'd out a window. Anything shorter
+            # gets dismissed as a transient flicker — tooltips, transient
+            # panels, modal sheets opening/closing, system HUDs, file-manager
+            # folder-transition gaps, etc., all cause brief window-count
+            # blips on both Mac and Windows.
+            #
+            # Additionally, suppress this entire block for the file manager
+            # while a recent nav is hot: rapid double-clicks through folders
+            # were producing phantom Cmd+W's even with the old 2-poll rule.
             if app:
-                wc = self._query_window_count(app)
-                prev = self._ctx_prev_window_count.get(app)
-                if wc is not None:
-                    if prev is not None and wc < prev:
-                        # Below previous count — increment the per-app
-                        # "drop seen" counter but DON'T emit yet.
-                        self._ctx_window_drop_pending[app] = \
-                            self._ctx_window_drop_pending.get(app, 0) + 1
-                        # On the second consecutive low reading, commit.
-                        if self._ctx_window_drop_pending[app] >= 2:
-                            self._record_ctx(now, {
-                                "action": "__ctx_window_close__",
-                                "app":    app
-                            })
-                            self._ctx_window_drop_pending[app] = 0
-                            # Lock in the new lower count as the baseline so
-                            # we don't keep firing on every subsequent poll.
-                            self._ctx_prev_window_count[app] = wc
-                    else:
-                        # Count is steady or increased — clear any pending
-                        # drop and update the baseline.
+                # Suppression window: file manager just navigated -> skip.
+                FM_NAV_FREEZE = 1.5    # seconds after a nav before close-detection re-arms
+                CLOSE_POLLS_REQUIRED = 3
+                fm_freeze = (
+                    app == file_mgr
+                    and (now - self._ctx_last_fm_nav_ts) < FM_NAV_FREEZE
+                )
+                if fm_freeze:
+                    # Don't accumulate or commit drops — but still take the
+                    # current count as the new baseline so we don't fire the
+                    # moment the freeze ends (e.g. user closes a window
+                    # immediately after navigating).
+                    wc = self._query_window_count(app)
+                    if wc is not None:
                         self._ctx_window_drop_pending[app] = 0
                         self._ctx_prev_window_count[app] = wc
+                else:
+                    wc = self._query_window_count(app)
+                    prev = self._ctx_prev_window_count.get(app)
+                    if wc is not None:
+                        if prev is not None and wc < prev:
+                            # Below previous count — increment the per-app
+                            # "drop seen" counter but DON'T emit yet.
+                            self._ctx_window_drop_pending[app] = \
+                                self._ctx_window_drop_pending.get(app, 0) + 1
+                            if self._ctx_window_drop_pending[app] >= CLOSE_POLLS_REQUIRED:
+                                self._record_ctx(now, {
+                                    "action": "__ctx_window_close__",
+                                    "app":    app
+                                })
+                                self._ctx_window_drop_pending[app] = 0
+                                # Lock in the new lower count as baseline so
+                                # we don't keep firing on every subsequent poll.
+                                self._ctx_prev_window_count[app] = wc
+                        else:
+                            # Count is steady or increased — clear any pending
+                            # drop and update the baseline.
+                            self._ctx_window_drop_pending[app] = 0
+                            self._ctx_prev_window_count[app] = wc
 
             # Sleep until either the interval elapses OR a click kicks us.
             # Clearing afterward so the next pass starts with a fresh wake
@@ -952,7 +1000,7 @@ class Recorder:
     def _polish(self, actions):
         """Post-compile cleanup: strip cosmetic noise from the script.
 
-        Two rules, both safe:
+        Three rules, all safe:
           1. Drop every `move_to`. The cursor still gets where it needs to
              be because every click/drag specifies (x,y); the move_to
              actions were only there to reproduce the user's mouse GLIDE
@@ -966,6 +1014,14 @@ class Recorder:
              context poller DID detect the navigation but the pixel-click
              got left behind. If within the next 3 non-wait actions we see
              an `open_file`, the click is redundant; drop it.
+          3. Drop a leading `focus_app: <file_manager>` when the next
+             non-wait action is an `open_file inPlace=true`. The bare
+             focus_app would pop up a default Finder/Explorer window
+             showing whatever was last open before the inPlace open_file
+             retargets it — the user sees an unwanted "regular Finder
+             window prior to the first folder" flash. The open_file
+             itself launches the FM if not already running, so the
+             focus_app is redundant.
 
         Rule 2 intentionally preserves clicks followed by NON-open_file
         actions — those are real button-clicks inside apps (Calendar event,
@@ -974,12 +1030,33 @@ class Recorder:
         # Rule 1: strip move_to.
         stripped = [a for a in actions if a.get('action') != 'move_to']
 
+        # File-manager name for rule 3 — Finder / File Explorer / Files / etc.
+        # Stored as lower-case for case-insensitive matching against focus_app
+        # names that came through any path (recorder vs runtime guesses).
+        fm_name = (platform.get_file_manager_name() or '').lower()
+
         # Rule 2: drop click/double_click superseded by a following open_file.
+        # Rule 3: drop focus_app:<file_manager> superseded by an inPlace open_file.
         out = []
         LOOKAHEAD = 4       # how far ahead to scan for a semantic action
         LOOKAHEAD_NONWAIT = 3
         for i, a in enumerate(stripped):
             kind = a.get('action')
+            if kind == 'focus_app' and fm_name and \
+                    (a.get('name') or '').lower() == fm_name:
+                # Look ahead for the next non-wait action.
+                superseded = False
+                for j in range(i + 1, min(i + 1 + LOOKAHEAD, len(stripped))):
+                    b = stripped[j]
+                    bk = b.get('action')
+                    if bk == 'wait':
+                        continue
+                    # Next semantic action is an inPlace open_file → drop us.
+                    if bk == 'open_file' and b.get('inPlace'):
+                        superseded = True
+                    break  # only look at the FIRST non-wait action
+                if superseded:
+                    continue
             if kind in ('click', 'double_click'):
                 # Scan forward, skipping waits (they represent real pauses
                 # the user took between the click and whatever fired next).
