@@ -51,16 +51,13 @@ def get_position():
 
 def check_accessibility():
     """Returns True iff THIS Python process is allowed to post mouse/keyboard
-    events via the Quartz event tap. Without this grant, pyautogui.click()
-    silently drops the event — no exception, no log — which looks exactly
-    like 'the clicker says it clicked but nothing happened'. We probe up-
-    front so we can surface a real error instead of lying to the user.
-    Returns None on weird configs (e.g. non-macOS) — caller treats as ok."""
+    events. On macOS this needs the Accessibility grant via AXIsProcessTrusted —
+    without it, pyautogui.click() silently drops the event (no exception, no
+    log). On Windows / Linux there's no equivalent gate so this returns True.
+    Returns None when we can't determine — caller treats as ok."""
     try:
-        import ctypes, ctypes.util
-        lib = ctypes.CDLL(ctypes.util.find_library('ApplicationServices'))
-        lib.AXIsProcessTrusted.restype = ctypes.c_bool
-        return bool(lib.AXIsProcessTrusted())
+        import platform_helpers as _platform
+        return _platform.check_accessibility()
     except Exception:
         return None
 

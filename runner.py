@@ -29,7 +29,6 @@ import time
 import uuid
 import re
 import threading
-import subprocess
 import traceback
 import urllib.parse
 import os
@@ -45,6 +44,11 @@ except Exception as _e:
                    '. Install it with:  python3 -m pip install --user pyautogui'
     }), flush=True)
     sys.exit(0)
+
+# Cross-platform helpers — auto-dispatches to platform_mac / platform_win /
+# platform_linux based on sys.platform. Single source of truth for every
+# OS-specific call (frontmost app, window raising, file opens, etc.).
+import platform_helpers as platform
 
 
 # ── EVENT PROTOCOL ───────────────────────────────────────────────────────────
@@ -190,36 +194,6 @@ def substitute(value, variables):
     return value
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# ════════════════════ PLATFORM-SPECIFIC SECTION: macOS ═══════════════════════
-# ═════════════════════════════════════════════════════════════════════════════
-#
-# Every helper between this banner and the matching "END PLATFORM-SPECIFIC"
-# banner below uses macOS-only APIs (osascript / AppleScript / `open`).
-# When porting to Windows / Linux, replace this entire section with platform
-# equivalents — the public function signatures and return shapes are stable
-# so callers in run_action() don't need to change.
-#
-# Public surface of this section (keep these names + signatures on every port):
-#   _current_frontmost_app() -> str                 # name of frontmost app
-#   _raise_window_by_title(app, title) -> bool      # raise window by title prefix
-#   _wait_until_frontmost(expected, timeout) -> bool# poll until app is frontmost
-#   _activate_app_via_events(app) -> bool           # force app to front
-#   _focus_modal_sheet(app) -> bool                 # un-dim a modal dialog
-#   _ensure_frontmost_app(action)                   # called before every click
-#
-# Windows port notes (for next-week work):
-#   - `osascript` calls → use pywin32 (win32gui, win32process) or UIAutomation.
-#   - `open -a "<App>"` → use `os.startfile()` for files, or
-#     subprocess.Popen(['cmd', '/c', 'start', '', appname]) for apps.
-#   - Frontmost detection: win32gui.GetForegroundWindow() +
-#     win32process.GetWindowThreadProcessId().
-#   - Window raising: win32gui.SetForegroundWindow() (with the AttachThreadInput
-#     dance for reliability across processes — Windows fights you on this).
-#   - Modal sheets don't exist on Windows — dialogs are separate windows.
-#     _focus_modal_sheet() can no-op there.
-# ═════════════════════════════════════════════════════════════════════════════
-
 # ── FRONTMOST-APP GUARD ──────────────────────────────────────────────────────
 # Recorded clicks carry an optional `app` hint (the app that was frontmost
 # when the user clicked). On replay, if something else is frontmost — because
@@ -227,204 +201,59 @@ def substitute(value, variables):
 # a blind click at the original (x,y) would land on the wrong thing. This
 # helper re-focuses the expected app first so the click actually lands where
 # the user meant it to.
-
-def _current_frontmost_app():
-    """Return the name of the frontmost macOS app, or '' on failure."""
-    try:
-        r = subprocess.run(
-            ['osascript', '-e',
-             'tell application "System Events" to get name of first application process whose frontmost is true'],
-            capture_output=True, text=True, timeout=2
-        )
-        if r.returncode == 0:
-            return (r.stdout or '').strip()
-    except Exception:
-        pass
-    return ''
-
-
-def _raise_window_by_title(app_name, title):
-    """Ask System Events to bring the window with the matching title to the
-    front of `app_name`. We match by prefix because macOS titles often get a
-    status suffix ('— Edited', '— file.txt') that changes across sessions but
-    the stable head is still a useful anchor. Returns True on best-effort
-    success, False if nothing matched (caller falls back to plain app focus).
-
-    Why this matters: the pure `open -a <app>` call only guarantees the app is
-    frontmost — NOT which of its windows is topmost. A click at (x,y) that
-    was recorded in window A can still land inside window B. Raising the
-    right window first closes that gap without needing pixel geometry."""
-    if not app_name or not title:
-        return False
-    # AppleScript string escapes: backslash then double-quote.
-    def esc(s):
-        return s.replace('\\', '\\\\').replace('"', '\\"')
-    t_full = esc(title)
-    # Prefix is the first ~24 chars; it's enough to disambiguate most docs
-    # while tolerating a trailing "- Edited" / tab-count suffix.
-    t_prefix = esc(title[:24] if len(title) > 24 else title)
-    script = '\n'.join([
-        'tell application "System Events"',
-        '  tell process "' + esc(app_name) + '"',
-        '    try',
-        '      set theWindows to every window',
-        '      repeat with w in theWindows',
-        '        set wn to name of w',
-        '        if wn is "' + t_full + '" or wn starts with "' + t_prefix + '" then',
-        '          perform action "AXRaise" of w',
-        '          set frontmost to true',
-        '          return "ok"',
-        '        end if',
-        '      end repeat',
-        '      return "nomatch"',
-        '    on error errmsg',
-        '      return "err:" & errmsg',
-        '    end try',
-        '  end tell',
-        'end tell',
-    ])
-    try:
-        r = subprocess.run(['osascript', '-e', script],
-                           capture_output=True, text=True, timeout=2.5)
-        return (r.returncode == 0 and (r.stdout or '').strip() == 'ok')
-    except Exception:
-        return False
-
-
-def _wait_until_frontmost(expected, timeout=1.2):
-    """Poll until `expected` is the frontmost app, or timeout. Returns True on
-    success. Used instead of a fixed sleep after `open -a` because app-launch
-    time varies hugely (cold-start Preview can take >1s; a warm Finder is
-    <50ms), and a fixed 0.35s sleep was both too slow (wasted time) and
-    sometimes too fast (clicks landing on a dialog's parent app before the
-    Window Server actually finished swapping focus)."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if _current_frontmost_app() == expected:
-            return True
-        time.sleep(0.05)
-    return False
-
-
-def _activate_app_via_events(app_name):
-    """Force `app_name` frontmost using System Events. Stronger than `open -a`
-    when the app is already running but a modal sheet from another process
-    grabbed focus (e.g. a macOS 'Allow access' prompt from CoreServicesUIAgent
-    dims the target app's window). `tell application X to activate` walks
-    through the WindowServer's focus rules properly instead of relying on
-    launch-services heuristics."""
-    if not app_name:
-        return False
-    def esc(s): return s.replace('\\', '\\\\').replace('"', '\\"')
-    script = 'tell application "' + esc(app_name) + '" to activate'
-    try:
-        r = subprocess.run(['osascript', '-e', script],
-                           capture_output=True, text=True, timeout=2)
-        return r.returncode == 0
-    except Exception:
-        return False
-
-
-def _focus_modal_sheet(app_name):
-    """If `app_name` has a modal sheet attached to any window, raise that
-    window so the sheet's buttons are clickable. macOS sheets (like the
-    'Keep Both / Replace' file-copy dialog) can't be AXRaised directly —
-    they're always attached to a parent window — but if the parent isn't
-    topmost, the sheet appears dimmed ("greyed out a lil bit") and clicks
-    may not register reliably. Returns True if a sheet was found + raised.
-
-    Bug this fixes: user records clicking "Replace" in a copy-dialog; on
-    replay, pyautogui fires a click at the recorded pixel, but between the
-    preceding action and the click the dialog's parent window lost focus
-    (e.g. Safari notification stole it), so the sheet is dimmed and the
-    button press doesn't fire."""
-    if not app_name:
-        return False
-    def esc(s): return s.replace('\\', '\\\\').replace('"', '\\"')
-    # Walk every window of the process; if it has a sheet, AXRaise it and
-    # make the process frontmost. Returns 'raised' on success, 'none' if no
-    # sheet was found, 'err:<msg>' on failure.
-    script = '\n'.join([
-        'tell application "System Events"',
-        '  tell process "' + esc(app_name) + '"',
-        '    try',
-        '      set frontmost to true',
-        '      repeat with w in (every window)',
-        '        if (count of sheets of w) > 0 then',
-        '          perform action "AXRaise" of w',
-        '          return "raised"',
-        '        end if',
-        '      end repeat',
-        '      return "none"',
-        '    on error errmsg',
-        '      return "err:" & errmsg',
-        '    end try',
-        '  end tell',
-        'end tell',
-    ])
-    try:
-        r = subprocess.run(['osascript', '-e', script],
-                           capture_output=True, text=True, timeout=2.5)
-        return r.returncode == 0 and (r.stdout or '').strip() == 'raised'
-    except Exception:
-        return False
-
+#
+# All platform-specific work (osascript on macOS, pywin32 on Windows, xdotool
+# on Linux) lives in platform_helpers / platform_<os>.py. This file just
+# orchestrates the steps.
 
 def _ensure_frontmost_app(action):
     """Refocus the expected app (and, if we have it, the expected window)
-    before a click. Silent no-op if no hint on the action — or if we can't
-    query osascript. Better a possibly-miss-clicked replay than an aborted
-    one.
+    before a click. Silent no-op if no hint on the action — or if the
+    platform backend can't query the foreground state. Better a possibly-
+    miss-clicked replay than an aborted one.
 
-    Sheet-handling is important here: if the target app has a modal dialog
-    (the 'Replace / Keep Both' copy prompts, 'Allow access' permission
-    dialogs, save-file sheets, etc.) and something else is frontmost, the
-    dialog renders dimmed and clicks into it don't reliably fire. We detect
-    this case and explicitly raise the sheet's parent window."""
+    Sheet-handling: if the target app has a modal dialog (macOS sheets, any
+    Windows owned popup) and something else is frontmost, the dialog can be
+    dimmed or behind another window and clicks won't reliably fire. We try
+    to raise the dialog explicitly."""
     expected = action.get('app')
     expected_title = action.get('window_title')
     if not expected and not expected_title:
         return
-    current = _current_frontmost_app()
+    current = platform.get_frontmost_app()
     if expected and (not current or current != expected):
         emit({'event': 'log',
               'message': 'Refocusing ' + expected + ' (was ' + (current or '?') + ')'})
-        # Two-pronged activation: `open -a` (launches if not running) +
-        # AppleScript `activate` (stronger when the app is already running
-        # but loses focus to a modal sheet from another process).
+        # Two-pronged activation: open_app (launches if not running) +
+        # activate_app (stronger when the app is already running but lost
+        # focus to a modal dialog from another process).
         try:
-            subprocess.run(['open', '-a', expected], check=False, timeout=3)
+            platform.open_app(expected, timeout=3)
         except Exception:
             return
-        _activate_app_via_events(expected)
+        platform.activate_app(expected)
         # Poll until the swap actually happens rather than sleeping blindly.
         # 1.2s is generous enough for cold-start Preview / Calendar / etc.
-        if not _wait_until_frontmost(expected, timeout=1.2):
+        if not platform.wait_until_frontmost(expected, timeout=1.2):
             emit({'event': 'log',
                   'message': 'Warning: ' + expected + ' did not come to '
                              'front within 1.2s — clicking anyway.'})
-    # If the app is running but has a dimmed modal sheet, raising its parent
-    # window un-dims it so the click actually lands on a live button.
+    # If the app is running but has a dimmed modal dialog, raising its parent
+    # un-dims it so the click actually lands on a live button.
     if expected:
-        if _focus_modal_sheet(expected):
+        if platform.focus_modal_dialog(expected):
             emit({'event': 'log',
                   'message': 'Raised modal dialog in ' + expected})
-            # Sheets animate in — a short settle keeps the click from racing
+            # Dialogs animate in — short settle keeps the click from racing
             # the animation and landing on the parent window instead.
             time.sleep(0.18)
     # Even if the app was already frontmost, try to raise the exact window.
     # Gracefully degrades when Accessibility isn't granted or title changed.
     if expected_title and expected:
-        raised = _raise_window_by_title(expected, expected_title)
-        if raised:
+        if platform.raise_window_by_title(expected, expected_title):
             emit({'event': 'log',
                   'message': 'Raised window "' + expected_title[:48] + '"'})
             time.sleep(0.12)
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# ══════════════════ END PLATFORM-SPECIFIC SECTION (macOS) ════════════════════
-# ═════════════════════════════════════════════════════════════════════════════
 
 
 # ── ACTION DISPATCH ──────────────────────────────────────────────────────────
@@ -447,11 +276,9 @@ def run_action(action, variables):
 
     elif kind == 'open_app' or kind == 'focus_app':
         name = substitute(action.get('name', ''), variables)
-        # PLATFORM:macOS — `open -a "AppName"` launches the app OR brings it to
-        # the front if running. Works for both "open" and "re-focus" use cases.
-        # WIN-PORT: replace with subprocess.Popen(['cmd','/c','start','',name])
-        # for launching, plus pywin32 SetForegroundWindow for re-focus.
-        subprocess.run(['open', '-a', name], check=False)
+        # Cross-platform: open_app launches OR focuses the app, whichever is
+        # appropriate for the platform's launching primitive.
+        platform.open_app(name)
 
     elif kind == 'open_file':
         # Open a file (or folder) with its default app — or with a specific
@@ -495,104 +322,72 @@ def run_action(action, variables):
             # Spawns way fewer stray Finder windows on long scripts.
             in_place = True
 
-        # PLATFORM:macOS — In-place Finder navigation: retarget the front
-        # window to the new folder instead of spawning a new one. Only
-        # attempted for local directories (URLs + files still use plain
-        # `open`). Falls back to plain `open` if no Finder window exists or
-        # AppleScript fails.
-        # WIN-PORT: equivalent is the Shell.Application COM object's Windows
-        # collection — iterate, find the front Explorer window, set its
-        # Navigate2 to the new path. Or just call os.startfile(path) which
-        # opens a new Explorer window every time (less polished UX).
+        # In-place file-manager navigation: retarget the front window to the
+        # new folder instead of spawning a new one. Only attempted for local
+        # directories. Falls back to a fresh open if the platform backend
+        # returns False (no front file-manager window, or no API support).
         if in_place and is_dir:
-            applescript = (
-                'tell application "Finder"\n'
-                '  activate\n'
-                '  if (count of windows) is 0 then\n'
-                '    make new Finder window to (POSIX file "' + path + '" as alias)\n'
-                '  else\n'
-                '    set target of front window to (POSIX file "' + path + '" as alias)\n'
-                '  end if\n'
-                'end tell'
-            )
-            try:
-                r = subprocess.run(
-                    ['osascript', '-e', applescript],
-                    capture_output=True, text=True, timeout=5
-                )
-                if r.returncode == 0:
-                    emit({'event': 'log',
-                          'message': 'Navigated Finder → ' + path})
-                    return
-                # Fall through to plain `open` on AppleScript failure.
-            except Exception:
-                pass  # Fall through to plain `open`.
+            if platform.open_directory_in_place(path):
+                emit({'event': 'log',
+                      'message': 'Navigated ' + platform.get_file_manager_name() +
+                                 ' → ' + path})
+                return
+            # Fall through to plain open on backend failure.
 
-        cmd = ['open']
-        if app:
-            cmd += ['-a', app]
-        cmd.append(path)
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            err = (result.stderr or '').strip() or 'open exit ' + str(result.returncode)
+        ok, err = platform.open_file(path, app=app)
+        if not ok:
             raise RuntimeError('open_file failed: ' + err)
         emit({'event': 'log',
               'message': 'Opened ' + path + (' with ' + app if app else '')})
 
     elif kind == 'wait_for_app':
-        # Poll macOS for the frontmost app until it matches, or timeout.
+        # Poll the OS for the frontmost app until it matches, or timeout.
         # Useful when you want the human to manually switch to an app before
         # the script continues (instead of the script force-focusing it).
         target = substitute(action.get('name', ''), variables)
         timeout = float(action.get('timeout', 60))
         deadline = time.time() + timeout
         while time.time() < deadline:
-            try:
-                r = subprocess.run(
-                    ['osascript', '-e',
-                     'tell application "System Events" to get name of first application process whose frontmost is true'],
-                    capture_output=True, text=True, timeout=3
-                )
-                front = r.stdout.strip()
-            except Exception:
-                front = ''
+            front = platform.get_frontmost_app()
             if front == target:
                 emit({'event': 'log', 'message': 'Detected ' + target + ' is now frontmost.'})
                 return
             time.sleep(0.3)
         raise TimeoutError('Timed out waiting for "' + target + '" to be frontmost.')
 
-    elif kind == 'applescript':
-        # PLATFORM:macOS — Run an AppleScript via osascript. Way more reliable
-        # than simulated keystrokes for Mac-app automation (new tabs, window
-        # ordering, etc.). Script can be a single string or a list of lines.
-        # Variables are substituted in first. Use the "|json" filter when
-        # injecting values into string literals so quotes and newlines are
-        # escaped properly:
-        #   "make new tab with properties {URL:\"{{url|json}}\"}"
-        # WIN-PORT: add a parallel `powershell` action with the same shape;
-        # this `applescript` action stays Mac-only and would error on Windows.
+    elif kind == 'applescript' or kind == 'powershell' or kind == 'shell' or kind == 'native_script':
+        # Run a native script in the platform's scripting language:
+        #   macOS   → AppleScript (osascript)
+        #   Windows → PowerShell
+        #   Linux   → bash
+        # All four action names are accepted so a script saved on one OS still
+        # parses on another (it'll just fail at run time if the body is in
+        # the wrong language). Variables are substituted first; use the
+        # "|json" filter when injecting values into string literals so quotes
+        # and newlines are escaped properly.
         raw = action.get('script', '')
         if isinstance(raw, list):
             raw = '\n'.join(str(x) for x in raw)
         script = substitute(raw, variables)
         timeout = float(action.get('timeout', 30))
-        try:
-            r = subprocess.run(
-                ['osascript', '-e', script],
-                capture_output=True, text=True, timeout=timeout
-            )
-        except subprocess.TimeoutExpired:
-            raise TimeoutError('AppleScript timed out after ' + str(timeout) + 's')
-        if r.returncode != 0:
-            err = (r.stderr or '').strip() or 'osascript exit ' + str(r.returncode)
-            raise RuntimeError('AppleScript failed: ' + err)
-        out = (r.stdout or '').strip()
+        # Cross-OS sanity check: warn if the script's "expected language"
+        # doesn't match the running platform. Doesn't block — there's nothing
+        # stopping the user from invoking osascript via a shell action on Mac
+        # — but it surfaces the most common mistake (running a Mac script on
+        # Windows or vice versa).
+        if kind != 'native_script' and kind != platform.NATIVE_SCRIPT_ACTION:
+            emit({'event': 'log',
+                  'message': 'Note: this script step expects ' + kind +
+                             ' but this machine runs ' + platform.PLATFORM_NAME +
+                             ' (native: ' + platform.NATIVE_SCRIPT_ACTION + '). '
+                             'Continuing anyway.'})
+        out = platform.run_native_script(script, timeout=timeout)
         store_as = action.get('storeAs')
         if store_as:
             variables[store_as] = out
         if out:
-            emit({'event': 'log', 'message': 'AppleScript → ' + out[:200]})
+            label = platform.NATIVE_SCRIPT_ACTION.capitalize()
+            emit({'event': 'log', 'message': label + ' → ' + out[:200]})
 
     elif kind == 'click':
         _ensure_frontmost_app(action)
@@ -694,23 +489,13 @@ def run_action(action, variables):
 # ── MAIN LOOP ────────────────────────────────────────────────────────────────
 
 def _has_accessibility():
-    """True iff this python binary is granted Accessibility (can post mouse/
-    keyboard events). Without this, pyautogui calls silently no-op. Returns
-    None on platforms where we can't probe (treated as ok by the caller).
-
-    PLATFORM:macOS — uses Apple's ApplicationServices framework + AXIsProcessTrusted.
-    WIN-PORT: Windows has no equivalent permission gate — input simulation
-    works without a TCC-style grant. Return None on Windows so the caller
-    skips the warning. (Linux: similar — just return None.)"""
-    if sys.platform != 'darwin':
-        return None
-    try:
-        import ctypes, ctypes.util
-        lib = ctypes.CDLL(ctypes.util.find_library('ApplicationServices'))
-        lib.AXIsProcessTrusted.restype = ctypes.c_bool
-        return bool(lib.AXIsProcessTrusted())
-    except Exception:
-        return None
+    """True iff this binary is granted permission to post mouse / keyboard
+    events. Without this, pyautogui calls silently no-op (on macOS — Windows
+    and Linux have no equivalent permission gate). Returns None when we
+    can't probe (treated as ok by the caller)."""
+    if not platform.NEEDS_ACCESSIBILITY_GRANT:
+        return None   # No grant required on this platform.
+    return platform.check_accessibility()
 
 
 _ACTIONS_NEEDING_A11Y = {

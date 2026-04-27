@@ -30,78 +30,25 @@ import argparse
 import threading
 import traceback
 import signal
-import subprocess
+
+# Cross-platform helpers — auto-dispatches to platform_mac / platform_win /
+# platform_linux based on sys.platform. All osascript / pywin32 / xdotool
+# calls live behind this single import.
+import platform_helpers as platform
 
 
-# PLATFORM:macOS — AUTOMATION-PERMISSION STARTUP PROBE ───────────────────────
-# Runs ONCE before listeners start. The macOS Automation prompt for System
-# Events fires on the FIRST AppleEvent, so triggering it synchronously up
-# front makes sure we either get a clear grant (prompt → user approves),
-# a clear deny (-1743), or a clear "prompt suppressed / cached" signal.
-# Without this the only osascript calls were in the background ctx-poll
-# thread, so silent denials looked identical to "recorder is working" — user
-# sees clicks captured, but app-switch / file-open detection never triggers.
-#
-# Long timeout (10s) because the macOS prompt BLOCKS osascript until the
-# user clicks Allow/Don't Allow. Anything under ~6s risks timing out while
-# the user is still reading the dialog.
-#
-# WIN-PORT: Windows has no equivalent permission gate for input automation —
-# this whole probe can be skipped. Replace the body with `return {'status':
-# 'ok', ...}` when sys.platform == 'win32'.
+# AUTOMATION-PERMISSION STARTUP PROBE ────────────────────────────────────────
+# Runs ONCE before listeners start. On macOS this triggers the System Events
+# Automation prompt synchronously so we get a clear "ok / denied / silent /
+# timeout / error" signal instead of silent failure in the background ctx
+# thread. On Windows / Linux this is essentially a smoke test that the
+# platform backend (pywin32 / xdotool) is alive and queries return data.
 def probe_automation_permission():
-    """Runs a synchronous AppleEvent probe at /usr/bin/osascript and returns
-    a dict describing what happened so the UI can show precise diagnostic
-    output on mom's Mac (the generic 'silent' case was blinding us).
-
-    Returns: {
-      'status':      'ok' | 'denied' | 'silent' | 'timeout' | 'error',
-      'returncode':  int or None,
-      'stdout':      str,
-      'stderr':      str,
-      'osascript':   bool,   # did we find the binary?
-    }
-
-    Pinning to /usr/bin/osascript (not relying on PATH) because the bundled
-    Python environment Electron spawns inherits a minimal PATH that sometimes
-    doesn't include /usr/bin on managed Macs, and we were getting 'osascript
-    not found' errors masked as generic 'silent' failures."""
-    import os
-    binary = '/usr/bin/osascript'
-    out = {'status': 'error', 'returncode': None, 'stdout': '', 'stderr': '',
-           'osascript': os.path.exists(binary)}
-    if not out['osascript']:
-        out['stderr'] = '/usr/bin/osascript not found'
-        return out
-    try:
-        r = subprocess.run(
-            [binary, '-e',
-             'tell application "System Events" to get name of first '
-             'application process whose frontmost is true'],
-            capture_output=True, text=True, timeout=10
-        )
-        out['returncode'] = r.returncode
-        out['stdout'] = (r.stdout or '').strip()
-        out['stderr'] = (r.stderr or '').strip()
-        if r.returncode == 0 and out['stdout']:
-            out['status'] = 'ok'
-            return out
-        stderr_low = out['stderr'].lower()
-        if ('-1743' in stderr_low
-                or 'not authorized to send apple events' in stderr_low
-                or 'not allowed assistive access' in stderr_low):
-            out['status'] = 'denied'
-        elif r.returncode == 0:
-            out['status'] = 'silent'
-        else:
-            out['status'] = 'silent'
-        return out
-    except subprocess.TimeoutExpired:
-        out['status'] = 'timeout'
-        return out
-    except Exception as e:
-        out['stderr'] = 'exception: ' + str(e)
-        return out
+    """Returns {status, returncode, stdout, stderr, osascript} where status
+    is one of 'ok' | 'denied' | 'silent' | 'timeout' | 'error'. The
+    'osascript' field name is kept for protocol compatibility with the hub —
+    on Windows / Linux it just means 'platform automation backend reachable'."""
+    return platform.probe_automation_permission()
 
 try:
     from pynput import keyboard, mouse
@@ -491,11 +438,12 @@ class Recorder:
                 self._ctx_wake.set()
         threading.Thread(target=_delayed_wake, daemon=True).start()
 
-        # If the last observation was Finder, snapshot selection NOW in the
-        # background — osascript takes ~50ms, but so does app-launching, and
-        # we want whichever happens first to be this query. Guarded by the
-        # cached prev_app so we don't spam osascript on every click.
-        if self._ctx_prev_app == 'Finder':
+        # If the last observation was the file manager (Finder / Explorer /
+        # Files / etc.), snapshot selection NOW in the background — the
+        # underlying query takes ~50ms, but so does app-launching, and we
+        # want whichever happens first to be this query. Guarded by the
+        # cached prev_app so we don't spam the OS on every click.
+        if self._ctx_prev_app == platform.get_file_manager_name():
             def _probe_selection():
                 try:
                     sel = self._query_finder_selection()
@@ -515,155 +463,70 @@ class Recorder:
             self.events.append((ts, action))
         emit({"event": "captured", "action": action})
 
-    # ═════════════════════════════════════════════════════════════════════
-    # ═════════════ PLATFORM-SPECIFIC SECTION: macOS ══════════════════════
-    # ═════════════════════════════════════════════════════════════════════
-    #
-    # Every `_query_*` and `_osascript` classmethod below uses macOS-only
-    # AppleScript / System Events APIs. The Windows port replaces this whole
-    # block with UIAutomation / pywin32 equivalents. The PUBLIC names stay
-    # the same so _ctx_poll_loop() doesn't change:
-    #
-    #   _query_frontmost_app()            -> str  (app name)
-    #   _query_frontmost_window_title()   -> str
-    #   _query_finder_front_path()        -> str  (or _query_explorer_front_path on Win)
-    #   _query_finder_selection()         -> str
-    #   _query_window_count(app)          -> int | None
-    #
-    # Windows port notes:
-    #   - Frontmost app: win32gui.GetForegroundWindow() + GetWindowText.
-    #   - Window title: GetWindowText on the foreground hwnd.
-    #   - Explorer front path: Shell.Application COM, iterate .Windows() looking
-    #     for IShellBrowser instances, get LocationURL, parse to filesystem path.
-    #   - Explorer selection: same Shell.Application COM, .Document.SelectedItems.
-    #   - Window count: EnumWindows + filter by process ID matching app.
-    #
-    # ═════════════════════════════════════════════════════════════════════
-
-    # ── context polling (app switches + Finder nav) ──────────────────────
-    # These helpers are called by the background _ctx_poll_loop thread. They
-    # store raw "__ctx_*__" markers in self.events that compile() rewrites
-    # into focus_app / open_file actions, optionally replacing nearby clicks.
+    # ── CONTEXT-POLLING QUERIES ──────────────────────────────────────────
+    # These thin wrappers delegate to platform_helpers, which dispatches to
+    # the right OS backend (osascript on Mac, pywin32 on Win, xdotool on
+    # Linux). The wrappers exist to centralize the one-shot permission-denied
+    # warning emission for the macOS Automation prompt — on Win/Linux that
+    # gate doesn't exist and the warning never fires.
 
     # Class-level flag: once we've emitted the "permission denied" warning we
     # don't spam the user on every subsequent poll. Reset per-Recorder instance.
     _perm_warning_emitted = False
 
     @classmethod
-    def _osascript(cls, script_lines, timeout=1.5):
-        """Run osascript; return stdout stripped, or '' on any failure.
-        Detects macOS Automation-permission denials (errAEEventNotPermitted,
-        -1743) and emits a one-shot actionable warning so the UI can surface
-        it — otherwise those failures are invisible and the recorder looks
-        'broken' (no app-switch / file-open detection) with no explanation."""
-        try:
-            args = ['osascript']
-            for line in script_lines:
-                args += ['-e', line]
-            r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
-            if r.returncode != 0:
-                stderr = (r.stderr or '').lower()
-                # -1743 = errAEEventNotPermitted (Automation permission denied)
-                # "not authorized to send apple events" = same thing, plain text
-                if ('-1743' in stderr
-                        or 'not authorized to send apple events' in stderr
-                        or 'not allowed assistive access' in stderr):
-                    if not cls._perm_warning_emitted:
-                        cls._perm_warning_emitted = True
-                        emit({
-                            "event": "warning",
-                            "code": "automation-denied",
-                            "message": "WillettBot can't watch app switches or Finder navigation — macOS hasn't granted Automation permission. Your clicks and keystrokes are still recording, but file-open and app-switch steps won't be detected. To fix: System Settings → Privacy & Security → Automation → enable WillettBot for System Events, Finder, and any apps you want it to control."
-                        })
-                return ''
-            return (r.stdout or '').strip()
-        except Exception:
-            return ''
+    def _maybe_warn_about_permissions(cls):
+        """Emit a one-shot warning if the platform's automation backend looks
+        denied. Currently only meaningful on macOS — on Windows / Linux the
+        check_automation() probe returns True and this is a no-op."""
+        if cls._perm_warning_emitted:
+            return
+        if platform.check_automation() is False:
+            cls._perm_warning_emitted = True
+            emit({
+                "event": "warning",
+                "code": "automation-denied",
+                "message": "WillettBot can't watch app switches or "
+                           + platform.get_file_manager_name() + " navigation — "
+                           "the OS hasn't granted automation permission. Your "
+                           "clicks and keystrokes are still recording, but "
+                           "file-open and app-switch steps won't be detected. "
+                           "On macOS: System Settings → Privacy & Security → "
+                           "Automation → enable WillettBot for System Events, "
+                           "Finder, and any apps you want it to control."
+            })
 
     @classmethod
     def _query_frontmost_app(cls):
-        return cls._osascript([
-            'tell application "System Events" to get name of first '
-            'application process whose frontmost is true'
-        ])
+        out = platform.get_frontmost_app()
+        if not out:
+            cls._maybe_warn_about_permissions()
+        return out
 
     @classmethod
     def _query_frontmost_window_title(cls):
         """Title of the frontmost window of the frontmost app, or ''.
         Used to anchor clicks to a specific window across replays."""
-        return cls._osascript([
-            'tell application "System Events"',
-            'try',
-            'set p to first application process whose frontmost is true',
-            'if (count of windows of p) is 0 then return ""',
-            'return name of front window of p',
-            'on error',
-            'return ""',
-            'end try',
-            'end tell'
-        ])
+        return platform.get_frontmost_window_title()
 
     @classmethod
     def _query_finder_front_path(cls):
-        # POSIX path of the front Finder window's target folder, or '' if no
-        # window. Wrapped in try so Desktop-only state doesn't raise.
-        return cls._osascript([
-            'tell application "Finder"',
-            'try',
-            'if (count of windows) is 0 then return ""',
-            'return POSIX path of (target of front window as alias)',
-            'on error',
-            'return ""',
-            'end try',
-            'end tell'
-        ])
+        """POSIX path of the front file-manager window's target folder.
+        Despite the name (kept for backward compat with the rest of the
+        recorder), this works for Finder, Explorer, or Linux file managers."""
+        return platform.get_file_manager_front_path()
 
     @classmethod
     def _query_finder_selection(cls):
-        # POSIX path of the first-selected Finder item, or ''. Handles the
-        # desktop (no windows) case too.
-        return cls._osascript([
-            'tell application "Finder"',
-            'try',
-            'set sel to selection',
-            'if (count of sel) is 0 then return ""',
-            'return POSIX path of ((item 1 of sel) as alias)',
-            'on error',
-            'return ""',
-            'end try',
-            'end tell'
-        ])
+        """Path of the first-selected item in the front file-manager."""
+        return platform.get_file_manager_selection()
 
     @classmethod
     def _query_window_count(cls, app_name):
-        """Return the number of windows owned by `app_name` as an int, or
-        None if we can't tell (app not running, AppleScript failed, etc.).
+        """Number of windows owned by `app_name`, or None if we can't tell.
         Used to detect when the user closes (X-outs) a window: the count
         drops while the frontmost app stays the same."""
-        if not app_name:
-            return None
-        # Escape double-quotes in the app name for the AppleScript string.
-        safe = app_name.replace('"', '\\"')
-        out = cls._osascript([
-            'tell application "System Events"',
-            'try',
-            'if not (exists process "' + safe + '") then return "?"',
-            'return (count of windows of process "' + safe + '") as string',
-            'on error',
-            'return "?"',
-            'end try',
-            'end tell'
-        ])
-        if not out or out == '?':
-            return None
-        try:
-            return int(out)
-        except ValueError:
-            return None
-
-    # ═════════════════════════════════════════════════════════════════════
-    # ═══════════ END PLATFORM-SPECIFIC SECTION (macOS) ═══════════════════
-    # ═════════════════════════════════════════════════════════════════════
+        return platform.get_window_count(app_name)
 
     def _record_ctx(self, ts, marker):
         """Store a context marker AND emit a user-friendly live event."""
@@ -701,19 +564,21 @@ class Recorder:
             if title:
                 self._ctx_prev_window_title = title
 
+            file_mgr = platform.get_file_manager_name()  # Finder / Explorer / Files
+
             if app and app != self._ctx_prev_app:
-                # Special case: switching FROM Finder TO another app right
-                # after selecting a file usually means "user opened that file
-                # with that app". Emit a file-open marker instead of a plain
-                # app switch so replay opens the file directly.
-                if (self._ctx_prev_app == 'Finder'
-                        and app != 'Finder'
+                # Special case: switching FROM the file manager TO another app
+                # right after selecting a file usually means "user opened that
+                # file with that app". Emit a file-open marker instead of a
+                # plain app switch so replay opens the file directly.
+                if (self._ctx_prev_app == file_mgr
+                        and app != file_mgr
                         and self._ctx_prev_finder_sel):
                     # Folders should never inherit an app hint. If the user
-                    # double-clicked a folder in Finder and then Chrome (or
-                    # any other app) happened to momentarily come frontmost,
-                    # we'd otherwise stamp `app: "Chrome"` on an open_file
-                    # that points at a DIRECTORY. Replay would then run
+                    # double-clicked a folder and then Chrome (or any other
+                    # app) happened to momentarily come frontmost, we'd
+                    # otherwise stamp `app: "Chrome"` on an open_file that
+                    # points at a DIRECTORY. Replay would then run
                     # `open -a Chrome /path/to/folder` which loads the folder
                     # as a file:// URL in a Chrome tab. Bug seen in the wild.
                     import os as _os
@@ -727,7 +592,7 @@ class Recorder:
                     except Exception:
                         is_dir = False
                     if is_dir:
-                        # Route through Finder, retarget existing window.
+                        # Route through the file manager, retarget existing window.
                         marker['inPlace'] = True
                     else:
                         marker['app'] = app
@@ -741,19 +606,22 @@ class Recorder:
                 # App changed → the cached window title belongs to the old
                 # app. Clear so we don't mis-anchor subsequent clicks.
                 self._ctx_prev_window_title = None
-                # Leaving Finder invalidates its cached state.
-                if app != 'Finder':
+                # Leaving the file manager invalidates its cached state.
+                if app != file_mgr:
                     self._ctx_prev_finder_path = None
                     self._ctx_prev_finder_sel  = None
 
-            # While Finder is frontmost, watch for folder nav + selection.
-            if app == 'Finder':
+            # While the file manager is frontmost, watch for folder nav +
+            # selection. The variable names keep "finder_" for backward
+            # compatibility with the rest of the recorder; semantically these
+            # mean "current file-manager state" on every platform.
+            if app == file_mgr:
                 fpath = self._query_finder_front_path()
                 if fpath and fpath != self._ctx_prev_finder_path:
                     # Skip the VERY FIRST observation so we don't record a
-                    # bogus "navigate to wherever Finder already was".
+                    # bogus "navigate to wherever the FM already was".
                     if self._ctx_prev_finder_path is not None:
-                        # inPlace=true → replay retargets the existing Finder
+                        # inPlace=true → replay retargets the existing FM
                         # window instead of spawning a new one every time.
                         self._record_ctx(now, {
                             "action":  "__ctx_finder_nav__",

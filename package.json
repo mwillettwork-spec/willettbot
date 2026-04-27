@@ -12,10 +12,13 @@
   "scripts": {
     "start": "electron .",
     "prepare-python": "bash scripts-build/prepare-python.sh",
+    "prepare-python:win": "powershell -ExecutionPolicy Bypass -File scripts-build/prepare-python.ps1",
     "strip-xattrs": "xattr -cr node_modules/electron 2>/dev/null || true",
     "clean-dist": "rm -rf dist-app",
     "dist": "npm run clean-dist && npm run strip-xattrs && npm run prepare-python && electron-builder --mac --x64 --publish always",
     "dist:dmg": "npm run clean-dist && npm run strip-xattrs && npm run prepare-python && electron-builder --mac dmg",
+    "dist:win": "npm run prepare-python:win && electron-builder --win --x64 --publish always",
+    "dist:linux": "npm run prepare-python && electron-builder --linux --x64 --publish always",
     "pack": "npm run clean-dist && npm run strip-xattrs && npm run prepare-python && electron-builder --dir"
   },
   "dependencies": {
@@ -47,6 +50,10 @@
       "clicker.py",
       "emailer.py",
       "permcheck.py",
+      "platform_helpers.py",
+      "platform_mac.py",
+      "platform_win.py",
+      "platform_linux.py",
       "licensing/public_key.pem",
       "licensing/keygen.js",
       "PRIVACY.md",
@@ -124,6 +131,45 @@
           "y": 180,
           "type": "link",
           "path": "/Applications"
+        }
+      ]
+    },
+    "win": {
+      "icon": "build-assets/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "publisherName": "Myles Willett",
+      "verifyUpdateCodeSignature": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "WillettBot"
+    },
+    "linux": {
+      "icon": "build-assets/icon.png",
+      "category": "Utility",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },

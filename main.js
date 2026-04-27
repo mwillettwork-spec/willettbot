@@ -143,26 +143,79 @@ const PY_DIR = __dirname.includes(`app.asar${path.sep}`) || __dirname.endsWith('
 //      works without requiring Myles to run prepare-python.sh.
 
 // PACKAGED path: extraResources in package.json copies bundled-python/python/
-// to <app>.app/Contents/Resources/python/. process.resourcesPath resolves to
-// that Contents/Resources dir at runtime. In dev this points at Electron's
-// own resources which won't contain our Python — so the lookup fails and
-// we fall through to the venv bootstrap below.
+// to <app-resources>/python/ at runtime. The exact Python binary path differs
+// per platform:
+//   macOS:   <Resources>/python/bin/python3
+//   Linux:   <Resources>/python/bin/python3
+//   Windows: <Resources>/python/python.exe
+// process.resourcesPath resolves to the right per-platform Resources dir.
+// In dev this points at Electron's own resources which won't contain our
+// Python — so the lookup fails and we fall through to the venv bootstrap.
+const IS_WIN   = process.platform === 'win32'
+const IS_MAC   = process.platform === 'darwin'
+const IS_LINUX = process.platform === 'linux'
+
+function bundledPyPath(rootResources) {
+  // Returns the absolute path to the bundled Python binary on the current
+  // platform, given the resources root. Doesn't check existence — caller does.
+  if (IS_WIN) return path.join(rootResources, 'python', 'python.exe')
+  return path.join(rootResources, 'python', 'bin', 'python3')
+}
+
 const BUNDLED_PY = (() => {
   try {
     if (!app || !app.isPackaged || !process.resourcesPath) return null
-    const p = path.join(process.resourcesPath, 'python', 'bin', 'python3')
+    const p = bundledPyPath(process.resourcesPath)
     return fs.existsSync(p) ? p : null
   } catch (_) { return null }
 })()
 
-const VENV_DIR   = path.join(DATA_DIR, 'venv')
-const VENV_PY    = path.join(VENV_DIR, 'bin', 'python3')
+const VENV_DIR = path.join(DATA_DIR, 'venv')
+const VENV_PY  = IS_WIN
+  ? path.join(VENV_DIR, 'Scripts', 'python.exe')
+  : path.join(VENV_DIR, 'bin', 'python3')
 const VENV_READY = path.join(VENV_DIR, '.wb-ready')   // marker: setup succeeded
-const PY_DEPS    = ['pyautogui', 'pynput']
 
-// Search common macOS install locations for a system python3 to bootstrap
-// the venv. We only need this once — the venv has its own python after.
+// Per-platform Python deps:
+//   - pyautogui + pynput everywhere
+//   - pywin32 on Windows so platform_win.py can do frontmost-app detection
+//     and Shell.Application COM (Explorer selection).
+const PY_DEPS = IS_WIN
+  ? ['pyautogui', 'pynput', 'pywin32']
+  : ['pyautogui', 'pynput']
+
+// Search common install locations for a system python3 to bootstrap the
+// venv. We only need this once — the venv has its own python after.
 function findBootstrapPython() {
+  if (IS_WIN) {
+    // Windows: try py launcher first (ships with python.org installer),
+    // then PATH. py is preferred because it picks the "best" installed
+    // Python automatically across versions.
+    const candidates = [
+      'C:\\Windows\\py.exe',
+      'C:\\Python312\\python.exe',
+      'C:\\Python311\\python.exe',
+      'C:\\Python310\\python.exe',
+      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Python', 'Python312', 'python.exe'),
+      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Python', 'Python311', 'python.exe'),
+    ]
+    for (const p of candidates) {
+      try { if (p && fs.existsSync(p)) return p } catch (_) {}
+    }
+    return 'python'  // last resort: hope PATH has it (cmd.exe finds python.exe)
+  }
+  if (IS_LINUX) {
+    const candidates = [
+      '/usr/bin/python3',
+      '/usr/local/bin/python3',
+      '/opt/python/bin/python3',
+    ]
+    for (const p of candidates) {
+      try { if (fs.existsSync(p)) return p } catch (_) {}
+    }
+    return 'python3'
+  }
+  // macOS
   const candidates = [
     '/opt/homebrew/bin/python3',                                 // Apple Silicon Homebrew
     '/usr/local/bin/python3',                                    // Intel Homebrew / python.org
