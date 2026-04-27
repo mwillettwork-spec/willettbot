@@ -117,10 +117,29 @@ jobs:
           path: bundled-python
           key: bundled-python-win-${{ hashFiles('scripts-build/prepare-python.ps1') }}
 
+      - name: Install Microsoft sign CLI for Azure Trusted Signing
+        # The `sign` CLI (github.com/dotnet/sign) bundles the Trusted Signing
+        # plugin so we can sign with Azure-stored certs. --prerelease pulls the
+        # latest version that supports `sign code trusted-signing`. Once a
+        # stable version ships we can pin a specific tag here.
+        run: dotnet tool install --global sign --prerelease
+        shell: pwsh
+
       - name: Install npm deps
         run: npm install
 
-      - name: Build & publish
+      - name: Build & publish (with Azure Trusted Signing)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN:                       ${{ secrets.GITHUB_TOKEN }}
+          # Service Principal creds — read by `sign code trusted-signing`
+          # via Azure DefaultAzureCredential.
+          AZURE_TENANT_ID:                ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:                ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET:            ${{ secrets.AZURE_CLIENT_SECRET }}
+          # Trusted Signing endpoint + account + cert profile names. These
+          # could be hardcoded in sign-windows.js but lifting them to env
+          # makes them easy to override per environment (e.g. test vs prod).
+          AZURE_CODE_SIGNING_ENDPOINT:    https://eus.codesigning.azure.net/
+          AZURE_CODE_SIGNING_ACCOUNT:     willettbot
+          AZURE_CERT_PROFILE:             willettbot-cert
         run: npm run dist:win

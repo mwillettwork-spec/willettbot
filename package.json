@@ -145,7 +145,8 @@
         }
       ],
       "publisherName": "Myles Willett",
-      "verifyUpdateCodeSignature": false
+      "verifyUpdateCodeSignature": false,
+      "sign": "./scripts-build/sign-windows.js"
     },
     "nsis": {
       "oneClick": false,
