@@ -238,6 +238,13 @@ class Recorder:
         self._ctx_prev_finder_sel = None    # last-seen Finder selection path
         self._ctx_prev_window_count = {}    # app-name → last-seen window count
                                             # (drops → user closed a window)
+        self._ctx_window_drop_pending = {}  # app-name → consecutive polls
+                                            # we've seen the count BELOW the
+                                            # baseline. Required to be ≥2
+                                            # before we commit a close event,
+                                            # so transient flickers (tooltips,
+                                            # modal dismiss animations, etc.)
+                                            # don't fire bogus Cmd+W hotkeys.
 
         # Horizontal-scroll accumulator for switch_desktop detection.
         self._hscroll_sum = 0.0             # signed dx sum over the active burst
@@ -711,20 +718,38 @@ class Recorder:
                     self._ctx_prev_finder_sel = sel
 
             # Window-close detection: if the window count for the frontmost
-            # app drops while the app itself didn't change, the user just
-            # X'd out a window. Emit a marker — compile() turns it into a
-            # Cmd+W hotkey (which works across every Mac app), replacing
-            # any nearby click on the close button.
+            # app drops AND stays dropped across the next poll, the user
+            # really X'd out a window (vs. a transient flicker — tooltips,
+            # transient panels, modal sheets opening/closing, system HUDs,
+            # etc., all cause brief window-count blips on both Mac and
+            # Windows). One-poll detection produced false positives that
+            # showed up as random Cmd+W / Ctrl+W hotkey events sprinkled
+            # through recordings. Require TWO consecutive polls below the
+            # previous high-water mark before committing to a close event.
             if app:
                 wc = self._query_window_count(app)
                 prev = self._ctx_prev_window_count.get(app)
                 if wc is not None:
                     if prev is not None and wc < prev:
-                        self._record_ctx(now, {
-                            "action": "__ctx_window_close__",
-                            "app":    app
-                        })
-                    self._ctx_prev_window_count[app] = wc
+                        # Below previous count — increment the per-app
+                        # "drop seen" counter but DON'T emit yet.
+                        self._ctx_window_drop_pending[app] = \
+                            self._ctx_window_drop_pending.get(app, 0) + 1
+                        # On the second consecutive low reading, commit.
+                        if self._ctx_window_drop_pending[app] >= 2:
+                            self._record_ctx(now, {
+                                "action": "__ctx_window_close__",
+                                "app":    app
+                            })
+                            self._ctx_window_drop_pending[app] = 0
+                            # Lock in the new lower count as the baseline so
+                            # we don't keep firing on every subsequent poll.
+                            self._ctx_prev_window_count[app] = wc
+                    else:
+                        # Count is steady or increased — clear any pending
+                        # drop and update the baseline.
+                        self._ctx_window_drop_pending[app] = 0
+                        self._ctx_prev_window_count[app] = wc
 
             # Sleep until either the interval elapses OR a click kicks us.
             # Clearing afterward so the next pass starts with a fresh wake
@@ -997,7 +1022,13 @@ def _friendly_context(marker):
             out['inPlace'] = True
         return out
     if kind == '__ctx_window_close__':
-        return {"action": "hotkey", "keys": ["command", "w"]}
+        # Close-window shortcut differs by OS. Mac uses Cmd+W; Windows and
+        # Linux use Ctrl+W. We pick the right one at compile time so the
+        # recorded script is portable to ANY install of WillettBot. (Even
+        # though scripts are usually replayed on the same machine they were
+        # recorded on, this keeps cross-machine sharing working.)
+        mod = 'command' if platform.is_mac() else 'ctrl'
+        return {"action": "hotkey", "keys": [mod, "w"]}
     return marker
 
 
