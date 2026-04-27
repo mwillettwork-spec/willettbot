@@ -1411,7 +1411,7 @@
         </div>
 
         <div class="safety-note">
-          First run only: macOS will ask for <em>Accessibility</em> (for clicking) and <em>Input Monitoring</em> (for the hotkey) — grant both in System Settings → Privacy & Security, then restart the app.
+          <span class="mac-only">First run only: macOS will ask for <em>Accessibility</em> (for clicking) and <em>Input Monitoring</em> (for the hotkey) — grant both in System Settings → Privacy & Security, then restart the app.</span><span class="win-only">Ready to go — Windows doesn't need any extra permissions for clicks or hotkeys. Just press <em>Start</em>.</span><span class="linux-only">On Linux, scripts may need <code>xdotool</code> and <code>wmctrl</code> installed for app-context detection (<code>sudo apt install xdotool wmctrl</code>). Clicks themselves work without it.</span>
           <div style="margin-top:10px">
             <a href="#" onclick="runPermissionCheck(true);return false" style="color:var(--accent);text-decoration:underline;cursor:pointer">Clicks not working? Fix permissions →</a>
           </div>
@@ -1449,7 +1449,7 @@
             </div>
           </div>
           <div style="font-size:12px;color:var(--text3);line-height:1.5;margin-bottom:16px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px">
-            <strong style="color:var(--text2)">First time recording?</strong> macOS will ask for permission to watch your keystrokes <em>and</em> to control Finder / System Events / any apps you use — click <em>OK</em> on every prompt. If you miss one, you can re-enable it in <em>System Settings → Privacy &amp; Security → Automation</em>. Without Automation permission the recorder only captures raw clicks, not app switches or file opens.
+            <strong style="color:var(--text2)">First time recording?</strong> <span class="mac-only">macOS will ask for permission to watch your keystrokes <em>and</em> to control Finder / System Events / any apps you use — click <em>OK</em> on every prompt. If you miss one, you can re-enable it in <em>System Settings → Privacy &amp; Security → Automation</em>. Without Automation permission the recorder only captures raw clicks, not app switches or file opens.</span><span class="win-only">Windows doesn't ask for any permissions — keystrokes and clicks are captured immediately. Just hit <em>Start</em>.</span><span class="linux-only">On X11 the recorder captures clicks and keys directly. On Wayland, app-context detection (which app you switched to, which folder you opened) won't work and you'll just get raw click + key events.</span>
           </div>
           <div class="two-col" style="margin-bottom:14px">
             <div class="field">
@@ -1522,8 +1522,8 @@
           </div>
 
           <div class="safety-note">
-            First run only: macOS may ask for <em>Input Monitoring</em> (to see your keystrokes) and <em>Accessibility</em> (to replay them later). Grant both in System Settings → Privacy & Security.
-            <div style="margin-top:10px">
+            <span class="mac-only">First run only: macOS may ask for <em>Input Monitoring</em> (to see your keystrokes) and <em>Accessibility</em> (to replay them later). Grant both in System Settings → Privacy & Security.</span><span class="win-only">No permission prompts on Windows — pyautogui and pynput just work. If clicks aren't firing on replay, check that the cursor isn't in a screen corner (pyautogui's failsafe).</span><span class="linux-only">On Linux, the recorder needs the X11 access to global input events, which usually works out of the box on Xorg. Wayland sessions limit this; consider switching the session to X11 if recording is silent.</span>
+            <div style="margin-top:10px" class="mac-only">
               <a href="#" onclick="runPermissionCheck(true);return false" style="color:var(--accent);text-decoration:underline;cursor:pointer">Not capturing? Fix permissions →</a>
             </div>
           </div>
@@ -1858,7 +1858,61 @@
 
   // Wire Enter-to-submit on the textarea (Cmd/Ctrl+Enter), so beta users
   // can activate without reaching for the mouse.
-  document.addEventListener('DOMContentLoaded', function() {
+  // Platform info (filled in on DOMContentLoaded). Cached so UI text branches
+  // don't have to await the IPC call every time. Defaults assume Mac so old
+  // copy still renders correctly if the get-platform handler ever fails.
+  var _platform = {
+    platform: 'darwin', isMac: true, isWin: false, isLinux: false,
+    name: 'macOS', fileManager: 'Finder', needsAccessibilityGrant: true
+  }
+  async function loadPlatformInfo() {
+    if (!ipcRenderer) return
+    try {
+      var info = await ipcRenderer.invoke('get-platform')
+      if (info && typeof info === 'object') _platform = info
+    } catch (e) { /* keep defaults */ }
+    // Tag the body so CSS rules can hide elements that only apply to one OS.
+    // Elements with class="mac-only" / "win-only" / "linux-only" automatically
+    // show/hide based on these body classes (rule injected just below).
+    try {
+      document.body.classList.remove('platform-mac', 'platform-win', 'platform-linux')
+      if (_platform.isMac)   document.body.classList.add('platform-mac')
+      if (_platform.isWin)   document.body.classList.add('platform-win')
+      if (_platform.isLinux) document.body.classList.add('platform-linux')
+    } catch (e) {}
+    // Replace common file-manager / OS-name placeholders inside elements
+    // tagged with class="os-text". Lets us write copy like:
+    //   <span class="os-text" data-mac="Finder" data-win="Explorer" data-linux="Files"></span>
+    // and have it resolve at load time without per-banner JS.
+    try {
+      var nodes = document.querySelectorAll('.os-text')
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i]
+        var v = _platform.isMac   ? n.getAttribute('data-mac') :
+                _platform.isWin   ? n.getAttribute('data-win') :
+                _platform.isLinux ? n.getAttribute('data-linux') : null
+        if (v != null) n.textContent = v
+      }
+    } catch (e) {}
+  }
+
+  // CSS for platform-conditional UI blocks. Injected once on first use so we
+  // don't have to remember to ship it in the static stylesheet.
+  (function _injectPlatformCss() {
+    try {
+      var s = document.createElement('style')
+      s.textContent =
+        'body:not(.platform-mac)   .mac-only   { display: none !important; }' +
+        'body:not(.platform-win)   .win-only   { display: none !important; }' +
+        'body:not(.platform-linux) .linux-only { display: none !important; }'
+      document.head.appendChild(s)
+    } catch (e) {}
+  })()
+
+  document.addEventListener('DOMContentLoaded', async function() {
+    // Resolve platform FIRST so any subsequent UI booting (activation gate,
+    // permission banner, recorder warnings) can branch on _platform.isMac.
+    await loadPlatformInfo()
     var ta = document.getElementById('act-key')
     if (ta) {
       ta.addEventListener('keydown', function(e) {
@@ -1946,6 +2000,15 @@
 
   async function runPermissionCheck(interactive) {
     if (!ipcRenderer) return
+    // Windows / Linux have no equivalent of macOS's TCC permission flow.
+    // pyautogui clicks and pynput listeners just work — there's nothing for
+    // the user to "grant," and rendering a Mac-flavored "fix permissions"
+    // card on those platforms is misleading. Skip the whole check.
+    if (_platform && !_platform.isMac) {
+      _permState = { ok: true, accessibility: true, automation: true,
+                     input_monitoring: true, platform: _platform.platform }
+      return
+    }
     try {
       var res = await ipcRenderer.invoke('check-permissions')
       _permState = res

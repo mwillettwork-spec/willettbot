@@ -526,18 +526,36 @@ try {
     }
 
     const newManifest = {}
-    for (const f of fs.readdirSync(seedDir)) {
+    console.log('[willettbot seeder] seedDir =', seedDir)
+    console.log('[willettbot seeder] SCRIPTS_DIR =', SCRIPTS_DIR)
+    let _seedDirEntries
+    try { _seedDirEntries = fs.readdirSync(seedDir) }
+    catch (e) {
+      console.error('[willettbot seeder] cannot read seedDir:', e)
+      _seedDirEntries = []
+    }
+    console.log('[willettbot seeder] seed files found:', _seedDirEntries.join(', '))
+    for (const f of _seedDirEntries) {
       if (!f.endsWith('.json')) continue
       const from = path.join(seedDir, f)
       const to   = path.join(SCRIPTS_DIR, f)
       let fromBuf
-      try { fromBuf = fs.readFileSync(from) } catch (e) { continue }
+      try { fromBuf = fs.readFileSync(from) }
+      catch (e) {
+        console.error('[willettbot seeder] cannot read', from, e)
+        continue
+      }
       const fromHash = sha(fromBuf)
       newManifest[f] = fromHash
 
       if (!fs.existsSync(to)) {
         // New seed, first install OR new script added in this build.
-        try { fs.writeFileSync(to, fromBuf) } catch (e) {}
+        try {
+          fs.writeFileSync(to, fromBuf)
+          console.log('[willettbot seeder] copied', f, '→', to)
+        } catch (e) {
+          console.error('[willettbot seeder] write FAILED for', to, e)
+        }
         continue
       }
       // Upgrade path: overwrite only if the user's copy matches the last
@@ -606,13 +624,18 @@ function showToast(opts) {
   const H = 140
   const margin = 12
 
-  const toastWin = new BrowserWindow({
+  // BrowserWindow options vary by platform: transparent: true + vibrancy
+  // produce a clean Mac-style frosted notification, but on Windows the same
+  // combo causes the window to render INVISIBLE (compositor doesn't know how
+  // to layer it) — which is why prompt popups never appeared on Windows.
+  // On Windows we use an opaque, frameless, shadowed window with our own
+  // dark background; same UX, just minus the vibrancy effect.
+  const toastOpts = {
     width: W,
     height: H,
     x: workX + width - W - margin,
     y: workY + margin,
     frame: false,
-    transparent: true,
     resizable: false,
     movable: true,
     minimizable: false,
@@ -620,15 +643,24 @@ function showToast(opts) {
     fullscreenable: false,
     alwaysOnTop: true,
     skipTaskbar: true,
-    hasShadow: false,      // our CSS does the shadow
-    show: false,           // show after we finish loading to avoid a flash
-    backgroundColor: '#00000000',
-    vibrancy: 'popover',   // optional macOS vibrancy fallback under the CSS blur
+    show: false,
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false
     }
-  })
+  }
+  if (IS_MAC) {
+    toastOpts.transparent = true
+    toastOpts.hasShadow = false           // our CSS does the shadow
+    toastOpts.backgroundColor = '#00000000'
+    toastOpts.vibrancy = 'popover'        // mac-only frosted-glass effect
+  } else {
+    // Windows / Linux: opaque dark background, system shadow.
+    toastOpts.transparent = false
+    toastOpts.hasShadow = true
+    toastOpts.backgroundColor = '#161618' // matches the hub's --surface
+  }
+  const toastWin = new BrowserWindow(toastOpts)
   // Float above fullscreen apps, match native notification behavior.
   try { toastWin.setAlwaysOnTop(true, 'screen-saver') } catch (e) {}
   try { toastWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }) } catch (e) {}
@@ -847,6 +879,23 @@ ipcMain.on('open-external-url', (event, url) => {
   }
 })
 
+// ── PLATFORM INFO ──
+// Renderer asks "what OS am I on?" so it can branch UI text — Mac users
+// see "macOS will ask for Accessibility…" copy, Windows users see the
+// equivalent (or nothing, since Windows has no equivalent permission flow).
+// Returns the same flag set we use in main.js so renderer logic mirrors ours.
+ipcMain.handle('get-platform', async () => {
+  return {
+    platform: process.platform,    // 'darwin' | 'win32' | 'linux'
+    isMac:    IS_MAC,
+    isWin:    IS_WIN,
+    isLinux:  IS_LINUX,
+    name:     IS_MAC ? 'macOS' : IS_WIN ? 'Windows' : IS_LINUX ? 'Linux' : process.platform,
+    fileManager: IS_MAC ? 'Finder' : IS_WIN ? 'Explorer' : 'Files',
+    needsAccessibilityGrant: IS_MAC
+  }
+})
+
 // ── SCRIPTS: list the JSON files in scripts/ with their metadata ──
 ipcMain.handle('list-scripts', async () => {
   try {
@@ -920,7 +969,13 @@ ipcMain.handle('check-permissions', async () => {
 
 // Open a specific pane of macOS System Settings by URL scheme. Saves the
 // user from hunting through Privacy & Security to find the right list.
+// Windows / Linux have no equivalent permission flow — return silently.
 ipcMain.on('open-system-settings', (event, pane) => {
+  if (!IS_MAC) {
+    // Windows has no TCC equivalent for input simulation; pyautogui clicks
+    // just work. Drop the call instead of opening a broken x-apple URL.
+    return
+  }
   const URLS = {
     accessibility:    'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
     automation:       'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
@@ -935,8 +990,11 @@ ipcMain.on('open-system-settings', (event, pane) => {
 // invalidates the prior Accessibility grant — pyautogui then silently no-ops
 // with no new prompt. tccutil reset clears the stale record so the next click
 // attempt fires a fresh permission prompt. User doesn't need to find and
-// delete entries in System Settings.
+// delete entries in System Settings. tccutil is macOS-only.
 ipcMain.handle('reset-tcc', async () => {
+  if (!IS_MAC) {
+    return { ok: true, output: 'Not applicable on this platform.' }
+  }
   const bundleId = 'com.willett.willettbot'
   return await new Promise((resolve) => {
     exec(`tccutil reset All ${bundleId}`, { timeout: 5000 }, (err, stdout, stderr) => {

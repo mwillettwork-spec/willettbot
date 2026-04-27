@@ -286,6 +286,23 @@ class Recorder:
             # Windows (where pynput reports key.char as a control character
             # when Ctrl is held — see _modified_key_name docstring).
             combo = _modified_key_name(key)
+            # Debug-emit on the FIRST hotkey of a recording so we can see what
+            # pynput actually delivered if a user reports a wrong combo. Goes
+            # to stdout as a regular event line; the hub log shows it.
+            if not getattr(self, '_dbg_first_hotkey_emitted', False):
+                try:
+                    raw_vk   = getattr(key, 'vk', None)
+                    raw_char = None
+                    try: raw_char = key.char
+                    except AttributeError: pass
+                    emit({"event": "log",
+                          "message": "[recorder dbg] first hotkey: vk=" + str(raw_vk) +
+                                     " char=" + repr(raw_char) +
+                                     " resolved=" + repr(combo) +
+                                     " mods=" + repr(sorted(mods))})
+                except Exception:
+                    pass
+                self._dbg_first_hotkey_emitted = True
             if not combo:
                 return
             keys_list.append(combo)
