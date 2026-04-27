@@ -484,14 +484,24 @@ try {
   // here in the upgrade branch too, so if they've modified it we leave it.
   const RETIRED_SEEDS = ['copy.json']
 
-  // In a packaged app this resolves to
-  //   <app>.app/Contents/Resources/scripts-seed
-  // via extraResources. In dev (`npm start`) process.resourcesPath points at
-  // Electron's internal resources, so we fall back to __dirname/scripts.
+  // Where to look for seed scripts, in priority order:
+  //   1. <Resources>/scripts-seed       — packaged app (extraResources copies
+  //                                        scripts-seed/ from the repo at
+  //                                        build time).
+  //   2. __dirname/scripts-seed         — dev mode (`npm start`). This is
+  //                                        the GIT-TRACKED canonical seed dir
+  //                                        — every clone has the seed JSONs
+  //                                        here regardless of OS.
+  //   3. __dirname/scripts              — legacy fallback for old dev clones
+  //                                        that put seeds in the user-scripts
+  //                                        dir before scripts-seed/ existed.
+  //                                        .gitignore excludes this dir so a
+  //                                        fresh clone won't have it.
   const candidates = []
   if (process.resourcesPath) {
     candidates.push(path.join(process.resourcesPath, 'scripts-seed'))
   }
+  candidates.push(path.join(__dirname, 'scripts-seed'))
   candidates.push(path.join(__dirname, 'scripts'))
   let seedDir = null
   for (const src of candidates) {

@@ -75,7 +75,7 @@
     ],
     "extraResources": [
       {
-        "from": "scripts",
+        "from": "scripts-seed",
         "to": "scripts-seed",
         "filter": [
           "**/*.json"

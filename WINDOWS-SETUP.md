@@ -1,8 +1,6 @@
 # WillettBot — Windows Daily Playbook
 
-Short, repeatable loop for working on / testing the app on Windows. Past
-first-time setup — Git, Node, Python, the cloned repo, and `npm install`
-are already done.
+Short, repeatable loop for working on / testing the app on Windows.
 
 If something blows up, open <https://claude.ai> in Edge and paste the
 error — same Claude as on the Mac side, just no file access.
@@ -12,150 +10,168 @@ error — same Claude as on the Mac side, just no file access.
 ## The loop (every session)
 
 ### 1. Open a fresh Command Prompt
-Win+R → type `cmd` → Enter.
+Win+R → `cmd` → Enter.
 
-### 2. Pull the latest fixes from GitHub
+### 2. Pull the latest fixes
 ```
 cd %USERPROFILE%\willettbot
 git pull
-```
-Expect either `Updating xxx..yyy` (good — new fixes pulled) or
-`Already up to date.` (also fine).
-
-If git complains about local changes:
-```
-git stash
-git pull
-git stash pop
 ```
 
 ### 3. Launch the app
 ```
 npm start
 ```
-If `npm start` errors about missing Node modules, run `npm install` once
-and try again.
+If npm errors about missing modules, run `npm install` once and try again.
 
-### 4. **Open the Developer Tools** (you'll need this for testing)
-With WillettBot open: **Help menu → Toggle Developer Tools** (or
-Ctrl+Shift+I). A panel opens. Click the **Console** tab. Leave it open
-the whole session — it shows every error and diagnostic line.
+### 4. Open Developer Tools
+**Help menu → Toggle Developer Tools** (or **Ctrl+Shift+I**) → click the
+**Console** tab. Leave open the whole session.
 
 ---
 
-## Test pass — run through these in order each session
+## After this latest pull — what changed
 
-### A. Confirm seed scripts are present
+This pull adds:
+1. The seed scripts (`send_gmail.json`, `example_greet.json`) are now
+   tracked in git via a new `scripts-seed\` folder. Before this they were
+   in `scripts\` which is gitignored — they never made it to your Windows
+   side, which is why Send Gmail wasn't in the builder.
+2. Windows COM is initialized correctly per-thread now, so the recorder
+   can detect Explorer folder/file opens (was failing silently before).
 
-In the Dev Tools Console you should see lines like:
+---
+
+## Test pass — do these in order
+
+### A. Both seed scripts now appear
+
+In the **Builder / Scripts** view, you should see:
+- **Send Gmail**
+- **Greet by name** (or similar — the example_greet script)
+- **Auto Clicker** (built-in, always there)
+
+In the Dev Tools Console at startup you should see:
 ```
-[willettbot seeder] seedDir = C:\Users\you\willettbot\scripts
-[willettbot seeder] SCRIPTS_DIR = C:\Users\you\AppData\Roaming\WillettBot\scripts
+[willettbot seeder] seedDir = ...\willettbot\scripts-seed
 [willettbot seeder] seed files found: example_greet.json, send_gmail.json
 [willettbot seeder] copied send_gmail.json → ...
+[willettbot seeder] copied example_greet.json → ...
 ```
 
-**Three things to check:**
-- `seed files found:` includes `send_gmail.json`. If it doesn't, your
-  cloned repo is missing the file — run `git pull` again.
-- One of: `copied send_gmail.json` (first launch) OR no copy line for it
-  (already exists from a previous launch). Either is fine.
-- No `[willettbot seeder] write FAILED` lines. If you see one, paste it
-  to claude.ai — it tells us exactly what permissions issue blocked the
-  copy.
+If the scripts STILL aren't there: paste me the entire `[willettbot seeder]`
+block. Most likely the `seedDir` doesn't point at the new folder for some
+reason.
 
-Then go to the **Builder / Scripts** view in WillettBot. The "Send Gmail"
-script should be in the list now.
+### B. Test the Send Gmail preset
 
-### B. Test the Gmail preset (popup + URL)
-
-1. From the hub, click the **Send Gmail** card.
-2. The popup window should appear in the **top-right corner** of your
-   screen (same place macOS notifications show on Mac).
-   - On old builds this was invisible because of a transparent-window bug.
-     Latest build uses an opaque dark popup on Windows.
-3. Fill in To / Subject / Body, click **Run Now**.
-4. A new browser tab should open with Gmail compose **fully prefilled** —
+1. Click **Send Gmail** in the Builder (or the card on the hub).
+2. The script-launch popup should appear in the **center** of the window
+   asking for To / Subject / Body — these are the script's "variables."
+3. Fill them in, click **Run Now**.
+4. While the script runs, a **second popup** appears in the **top-right
+   corner** of your screen asking you to confirm you sent the email.
+   This is the recorder's `prompt` action.
+   - If this popup is invisible / never appears, you're on an old build —
+     `git pull` and try again.
+5. A new browser tab should open with **Gmail compose fully prefilled** —
    not just `https://mail.google.com/mail/?view=cm` with no fields. If
-   you only see a bare compose tab, you're on an old build (cmd.exe was
-   chopping the URL at `&`); `git pull` and try again.
+   only the URL prefix opens, you're on an old build (Windows cmd was
+   chopping the URL at `&`).
+6. Click "I sent it" on the popup to finish.
 
-### C. Test the recorder hotkey fix
+### C. Test the recorder hotkey
 
 1. Click **Record New Script.**
-2. Press **F9** (or click the Start button) to begin recording.
+2. Press F9 (or click Start) to begin recording.
 3. Open Notepad, type "hello", press **Ctrl+C**, press **Ctrl+V**.
 4. Click **Stop** OR press **F10**.
 5. The Save Script panel should appear. Save it with a name.
 6. Open the saved script in the Builder.
 
-**What to check:**
-- The hotkey actions should show as `ctrl+c` and `ctrl+v` — not blank,
-  not "ctrl+d", not weird symbols.
-- In the **Dev Tools Console**, look for a line like:
-  ```
-  [recorder dbg] first hotkey: vk=67 char='\x03' resolved='c' mods=['ctrl']
-  ```
-  - `vk=67` (or `vk=86` for V) means pynput delivered the virtual key
-    code correctly.
-  - `resolved='c'` means our recorder mapped it to the right letter.
+In the actions list you should see `ctrl+c` and `ctrl+v` — not blank, not
+"ctrl+d", not weird symbols.
 
-**If hotkeys are still wrong**, copy that whole `[recorder dbg]` line and
-paste it to claude.ai — it tells me exactly what pynput is giving us so
-I can fix it definitively.
+In the Console look for:
+```
+[recorder dbg] first hotkey: vk=67 char='\x03' resolved='c' mods=['ctrl']
+```
+- `vk=67` is the virtual key code for C
+- `resolved='c'` means we mapped it correctly
 
-### D. Test the recorder Stop button
+If the hotkey is STILL wrong, paste me that whole `[recorder dbg]` line.
 
-When you click **Stop** during recording (instead of pressing F10), the
-**Save Script** panel must appear within a couple seconds. If it doesn't,
-you're on an old build — `git pull` and try again.
+### D. Test recorder folder/file detection
 
-### E. Confirm Windows doesn't show Mac-only UI
+1. Click **Record New Script** again.
+2. Start recording.
+3. Open File Explorer (Win+E).
+4. Navigate into a folder (e.g. Downloads → some-subfolder).
+5. Double-click a file inside it (any text file, image, whatever).
+6. Stop recording.
+7. Open the saved script.
 
-These should NOT appear on Windows:
-- Any banner saying "macOS will ask for Accessibility…"
-- Any "Fix permissions" link
-- "System Settings → Privacy & Security" instructions
+In the actions list you should see things like:
+- `navigate to C:\Users\you\Downloads\some-subfolder` (the `inPlace`
+  folder navigation)
+- `open C:\Users\you\Downloads\some-subfolder\thefile.txt` (the file open)
 
-If you see any of those on Windows, you're on an old build — `git pull`.
+NOT a long list of raw `click (1234, 567)` actions. If you only see raw
+clicks, paste me the action list and I'll dig in.
+
+### E. Confirm Windows shows no Mac-only UI
+
+Should NOT appear anywhere on Windows:
+- "macOS will ask for Accessibility…"
+- "System Settings → Privacy & Security"
+- "Fix permissions" link
+
+If you see any of these, you're on an old build — `git pull`.
 
 ---
 
-## What to send back if anything's wrong
+## What to send me if anything's off
 
-For each broken item, copy from the Dev Tools Console:
-1. The `[willettbot seeder]` lines (top of the console).
+For each issue, copy from the Console:
+1. The `[willettbot seeder]` lines (top of console).
 2. The `[recorder dbg]` line (after recording any hotkey).
-3. Any red error lines.
+3. The action list of any test recording where the result was wrong.
+4. Any red error lines.
 
-Paste those into <https://claude.ai> in Edge. With those three things
-I can diagnose nearly everything without seeing the screen.
+Paste those into <https://claude.ai>. I can debug nearly everything from
+those four pieces without seeing your screen.
 
 ---
 
 ## Common issues
 
+**Send Gmail / Greet by name still missing**
+You're on a build before the `scripts-seed/` switch. `git pull`. The
+seeder's first launch will copy them in.
+
 **Stop button doesn't open the Save Script panel**
-Old build. `git pull`. Workaround until you pull: press F10 (end hotkey)
-instead of clicking Stop.
+Old build. `git pull`. Workaround: press F10 instead of clicking Stop.
 
-**Hotkeys recorded as the wrong letter or blank**
-Old build. `git pull`. After pulling, the `[recorder dbg]` line in the
-console will show what pynput delivered.
+**Hotkeys recorded as the wrong letter**
+Old build. `git pull`. After pulling, the `[recorder dbg]` Console line
+shows what pynput actually delivered.
 
-**Gmail preset opens a half-broken URL or no popup at all**
-Old build. `git pull`. The fixes are in the latest commit.
+**Folder/file opens don't show up in recorded scripts**
+Old build (COM init missing in the polling thread). `git pull`.
 
-**"npm start" hangs or errors at "creating venv"**
-The system Python is missing or not on PATH. Run `python --version` —
-if that errors, re-run the python.org installer with "Add python.exe to
-PATH" checked.
+**No prompt popup during a script run**
+Old build (transparent toast was invisible on Windows). `git pull`.
+
+**"npm start" hangs at "creating venv"**
+System Python missing or not on PATH. Run `python --version` — if it
+errors, re-run the python.org installer with "Add python.exe to PATH"
+checked.
 
 **"pywin32 import failed" in the dev console**
-The venv bootstrap didn't finish. Delete `%APPDATA%\WillettBot\venv\`
-and `npm start` again to re-bootstrap.
+Venv bootstrap didn't finish. Delete `%APPDATA%\WillettBot\venv\` and
+`npm start` again to re-bootstrap.
 
-**Smoke test (`python platform_helpers.py`) prints `frontmost app: (empty)`**
+**Smoke test prints `frontmost app: (empty)`**
 Your shell's Python doesn't have pywin32. Either:
 ```
 py -m pip install pywin32
@@ -164,17 +180,6 @@ py -m pip install pywin32
 ```
 "%APPDATA%\WillettBot\venv\Scripts\python.exe" platform_helpers.py
 ```
-
-**Clicks "happen" on replay but nothing visibly moves**
-Cursor is in a screen corner (pyautogui FAILSAFE). Move it away.
-
-**"GetForegroundWindow() returns 0"**
-Foreground window is the desktop or a UAC dialog. Click on a normal app
-window first.
-
-**Recorded script saves but replay does nothing**
-Open Help → Toggle Developer Tools → Console tab. Errors during the
-Python runner spawn show up there.
 
 **`git pull` says "Your local changes would be overwritten"**
 You edited a tracked file on Windows without committing it.
@@ -188,13 +193,10 @@ git stash pop
 
 ## The fix-and-test loop
 
-When something breaks on Windows that you want me to fix from the Mac:
+When something breaks on Windows that needs a Mac-side fix:
 
-1. **On Windows:** copy the exact error or `[recorder dbg]` / seeder
-   lines from the Dev Tools Console.
-2. **On Mac:** open <https://claude.ai>, paste it, ask for a fix.
+1. **On Windows:** copy the relevant Console lines.
+2. **On Mac:** open <https://claude.ai>, paste them, ask for a fix.
 3. **On Mac:** I push the fix to GitHub.
 4. **On Windows:** `git pull` → close the app → `npm start` again.
 5. Re-test from "Test pass" above.
-
-Mac is the source of truth; Windows is a copy you keep refreshing.

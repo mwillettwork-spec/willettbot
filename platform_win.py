@@ -61,17 +61,56 @@ def _w32():
         import win32con          # noqa
         import win32api          # noqa
         import win32com.client   # noqa
+        import pythoncom         # noqa  (used by _ensure_com)
         _w32_modules = {
             'gui': win32gui,
             'process': win32process,
             'con': win32con,
             'api': win32api,
             'com': win32com.client,
+            'pythoncom': pythoncom,
         }
         return _w32_modules
     except Exception as e:
         _w32_import_error = str(e)
         return None
+
+
+# ── COM PER-THREAD INIT ─────────────────────────────────────────────────────
+# Windows COM (Component Object Model) requires every thread that uses COM to
+# call CoInitialize() / CoInitializeEx() once before the first COM call. If
+# a worker thread uses Shell.Application without doing this, calls fail with
+# CO_E_NOTINITIALIZED — which is exactly why folder/file-open detection in
+# the recorder's context poller wasn't firing on Windows. The fix is a small
+# per-thread guard that runs CoInitialize lazily and only once per thread.
+import threading as _threading
+_com_initialized = _threading.local()
+
+
+def _ensure_com():
+    """Initialize COM apartment for the current thread if it hasn't been yet.
+    Idempotent and thread-safe (each thread has its own _com_initialized
+    flag via threading.local). Returns True if COM is now usable in this
+    thread, False if pywin32 isn't available."""
+    w = _w32()
+    if not w:
+        return False
+    if getattr(_com_initialized, 'done', False):
+        return True
+    try:
+        # COINIT_APARTMENTTHREADED (0x2) = STA, the default for Shell.
+        # Some Python COM wrappers (and some apartments) accept already-
+        # initialized as RPC_E_CHANGED_MODE — that's fine, we still proceed.
+        try:
+            w['pythoncom'].CoInitialize()
+        except Exception:
+            # Already initialized in this thread, or apartment mismatch —
+            # either way, COM is usable; proceed.
+            pass
+        _com_initialized.done = True
+        return True
+    except Exception:
+        return False
 
 
 def _process_name_from_hwnd(hwnd):
@@ -205,7 +244,14 @@ def get_file_manager_name():
 def _shell_explorer_windows():
     """Iterate Shell.Application's open folder windows. Yields each COM
     InternetExplorer/ShellWindow object whose document is a folder. Empty
-    iterator on COM failure."""
+    iterator on COM failure.
+
+    Calls _ensure_com() first so this works correctly when invoked from a
+    worker thread (e.g. the recorder's context-poller thread) — without
+    it, Dispatch raises CO_E_NOTINITIALIZED and folder-open detection
+    silently fails."""
+    if not _ensure_com():
+        return
     w = _w32()
     if not w:
         return
@@ -535,6 +581,8 @@ def open_directory_in_place(path, timeout=5.0):
     a new one. Uses the Shell.Application COM 'Navigate2' on the foreground
     window. Falls back to False if no Explorer window is foreground (caller
     should fall back to os.startfile)."""
+    if not _ensure_com():
+        return False
     w = _w32()
     if not w or not path:
         return False
