@@ -1,6 +1,6 @@
 {
   "name": "willettbot",
-  "version": "1.0.19",
+  "version": "1.0.20",
   "description": "Desktop automation for non-technical users — record, edit, and replay macros.",
   "main": "main.js",
   "author": {
@@ -178,7 +178,7 @@
         "provider": "github",
         "owner": "mwillettwork-spec",
         "repo": "willettbot",
-        "private": true,
+        "private": false,
         "releaseType": "release"
       }
     ]

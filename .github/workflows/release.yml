@@ -1,0 +1,120 @@
+# ─────────────────────────────────────────────────────────────────────────
+# WillettBot release workflow
+#
+# Triggers when a git tag matching v* is pushed (e.g. `git tag v1.0.20 &&
+# git push --tags`). Builds the Mac DMG (signed + notarized) on a macOS
+# runner, then builds the Windows EXE on a Windows runner, and publishes
+# both artifacts (plus latest-mac.yml + latest.yml for auto-update) to a
+# single GitHub Release named after the tag.
+#
+# Mac runs first so it creates the release; Windows runs second and
+# appends. This avoids the 422 "already_exists" race we saw when both
+# jobs raced to create the release.
+#
+# Required GitHub repo secrets (Settings → Secrets and variables → Actions):
+#   APPLE_ID                     - Your Apple ID email
+#   APPLE_APP_SPECIFIC_PASSWORD  - From appleid.apple.com → App-Specific Passwords
+#   APPLE_TEAM_ID                - MP2LL5ZQC5
+#   MAC_CERT_BASE64              - base64 of your Developer ID Application .p12
+#   MAC_CERT_PASSWORD            - Password you set when exporting the .p12
+#
+# GITHUB_TOKEN is provided automatically by Actions — no setup needed.
+# ─────────────────────────────────────────────────────────────────────────
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:    # also lets you trigger manually from the Actions tab
+
+permissions:
+  contents: write       # needed so GITHUB_TOKEN can create/update the release
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────
+  # Mac: build, sign, notarize, publish to GitHub Releases
+  # ───────────────────────────────────────────────────────────────────
+  build-mac:
+    name: Build Mac DMG
+    runs-on: macos-13   # Intel runner; matches the x64 DMG target in package.json
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Cache bundled Python
+        uses: actions/cache@v4
+        with:
+          path: bundled-python
+          key: bundled-python-mac-${{ hashFiles('scripts-build/prepare-python.sh') }}
+
+      - name: Install npm deps
+        run: npm install
+
+      - name: Import macOS signing certificate
+        env:
+          MAC_CERT_BASE64:   ${{ secrets.MAC_CERT_BASE64 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+        run: |
+          # Decode the base64 .p12 into a temp file. electron-builder reads
+          # CSC_LINK + CSC_KEY_PASSWORD and imports it into a temporary keychain.
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          echo -n "$MAC_CERT_BASE64" | base64 --decode > "$CERT_PATH"
+          if [ ! -s "$CERT_PATH" ]; then
+            echo "ERROR: decoded cert is empty. Check MAC_CERT_BASE64 secret."
+            exit 1
+          fi
+          echo "CSC_LINK=$CERT_PATH"               >> "$GITHUB_ENV"
+          echo "CSC_KEY_PASSWORD=$MAC_CERT_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Build, sign, notarize, publish
+        env:
+          # Notarization
+          APPLE_ID:                    ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID:               ${{ secrets.APPLE_TEAM_ID }}
+          # Publishing — electron-builder reads GH_TOKEN to upload to GitHub Releases
+          GH_TOKEN:                    ${{ secrets.GITHUB_TOKEN }}
+        run: npm run dist
+
+  # ───────────────────────────────────────────────────────────────────
+  # Windows: build, publish to the same GitHub Release
+  # Runs after Mac so the release already exists and we just append.
+  # ───────────────────────────────────────────────────────────────────
+  build-win:
+    name: Build Windows EXE
+    needs: build-mac
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Cache bundled Python
+        uses: actions/cache@v4
+        with:
+          path: bundled-python
+          key: bundled-python-win-${{ hashFiles('scripts-build/prepare-python.ps1') }}
+
+      - name: Install npm deps
+        run: npm install
+
+      - name: Build & publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run dist:win
