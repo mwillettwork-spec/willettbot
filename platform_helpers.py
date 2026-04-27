@@ -148,3 +148,66 @@ def is_windows():
 
 def is_linux():
     return sys.platform.startswith('linux')
+
+
+# ── SELF-TEST ───────────────────────────────────────────────────────────────
+# Run as `python platform_helpers.py` to smoke-test the platform backend on
+# whatever Python interpreter you've got. Prints clear diagnostics — including
+# a "pywin32 not installed" hint on Windows — instead of just returning ''
+# from queries and leaving you to guess. Used in WINDOWS-SETUP.md step 5.
+def _self_test():
+    print('PLATFORM_NAME:        ' + str(PLATFORM_NAME))
+    print('NATIVE_SCRIPT_ACTION: ' + str(NATIVE_SCRIPT_ACTION))
+    print('python:               ' + sys.executable)
+    print('---')
+    front = get_frontmost_app()
+    print('frontmost app:        ' + (front if front else '(empty)'))
+    title = get_frontmost_window_title()
+    print('frontmost title:      ' + (title if title else '(empty)'))
+    print('file manager name:    ' + str(get_file_manager_name()))
+    fm_path = get_file_manager_front_path()
+    print('file manager path:    ' + (fm_path if fm_path else '(empty)'))
+    # Diagnostic when queries returned blank — point the user at the most
+    # likely cause per platform so they don't have to guess.
+    if not front:
+        print('---')
+        if is_windows():
+            try:
+                from platform_win import _w32_import_error
+            except Exception:
+                _w32_import_error = None
+            if _w32_import_error:
+                print('DIAGNOSTIC: pywin32 is not installed in THIS Python.')
+                print('            Import error: ' + str(_w32_import_error))
+                print('')
+                print('  This Python:  ' + sys.executable)
+                print('')
+                print('  Fix (choose one):')
+                print('   1. Install pywin32 in this Python:')
+                print('        py -m pip install pywin32')
+                print('   2. Or just use the app\'s venv Python — it already')
+                print('      has pywin32 because the app installed it on first')
+                print('      launch. The venv lives at:')
+                print('        %APPDATA%\\WillettBot\\venv\\Scripts\\python.exe')
+                print('')
+                print('  The app itself uses the venv Python, so a blank result')
+                print('  here does NOT mean the app is broken — it just means')
+                print('  THIS Python (your shell\'s python) is missing pywin32.')
+            else:
+                print('DIAGNOSTIC: pywin32 imported but the foreground-window')
+                print('            query returned nothing. The foreground may be')
+                print('            the desktop or a UAC-protected window. Click')
+                print('            on a normal app window and try again.')
+        elif is_mac():
+            print('DIAGNOSTIC: empty frontmost app on Mac usually means')
+            print('            Automation permission was denied. Check:')
+            print('              tccutil reset AppleEvents com.willett.willettbot')
+        else:
+            print('DIAGNOSTIC: empty frontmost app on Linux usually means')
+            print('            xdotool/wmctrl is not installed, or you are on')
+            print('            Wayland (which blocks X11 introspection). Try:')
+            print('              sudo apt install xdotool wmctrl')
+
+
+if __name__ == '__main__':
+    _self_test()

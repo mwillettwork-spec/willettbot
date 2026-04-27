@@ -1,20 +1,37 @@
 # WillettBot — Windows Setup & Test Guide
 
-This is the playbook for getting WillettBot running on a Windows machine
-(Bootcamp, VM, or dedicated Windows PC). Follow it in order. Each step has
-a "verify" check so you know it worked before moving on.
+This is your playbook for working on the Windows side. It covers two paths:
+
+- **Section A** — first-time setup on a brand-new Windows machine.
+- **Section B** — what to do every time you boot back into Windows (the
+  daily loop: pull latest, launch the app, test).
 
 If something blows up partway through, open <https://claude.ai> in Edge and
 paste the error — same Claude as on the Mac side, just no file access.
 
 ---
 
-## 1. Install prerequisites
+## Where to start
 
-You need three things on Windows that you already have on Mac. Install them
-in this order. Total time: ~15 minutes including downloads.
+- **First boot into Windows ever?** → go to **Section A** (everything from
+  scratch: install Git / Node / Python, clone the repo, run the app).
+- **Already finished Section A in a previous session?** → skip to
+  **Section B**. That's the short, repeatable "I just rebooted, what now?"
+  flow.
 
-### 1a. Git for Windows
+---
+
+# SECTION A — First-time setup (only do this once)
+
+You only need to run through Section A on a brand-new Windows machine.
+Once it's done, every future session uses Section B instead.
+
+## A1. Install prerequisites
+
+Three things you already have on Mac. Total time: ~15 minutes including
+downloads.
+
+### A1a. Git for Windows
 Download: <https://git-scm.com/download/win>
 - Run the installer with all defaults.
 - During install: when it asks about "Adjusting your PATH environment,"
@@ -26,12 +43,11 @@ git --version
 ```
 Should print something like `git version 2.45.x`.
 
-### 1b. Node.js (LTS, version 20 or higher)
+### A1b. Node.js (LTS, version 20 or higher)
 Download: <https://nodejs.org/en/download>
 - Pick the **LTS** "Windows Installer (.msi)" for x64.
 - Run with all defaults — leave "Add to PATH" checked, leave the optional
-  Chocolatey/Python add-on **unchecked** (we'll install Python separately
-  to control the version).
+  Chocolatey/Python add-on **unchecked** (we install Python separately).
 
 **Verify:**
 ```
@@ -40,10 +56,10 @@ npm --version
 ```
 Both should print versions. Node ≥ 20, npm ≥ 10.
 
-### 1c. Python 3.12 (the python.org installer, NOT the Microsoft Store version)
+### A1c. Python 3.12 (the python.org installer, NOT the Microsoft Store version)
 
 ⚠️ The Microsoft Store version of Python has registry shenanigans that break
-pywin32 — we specifically want the python.org installer.
+pywin32. Use the python.org installer.
 
 Download: <https://www.python.org/downloads/windows/>
 - Pick **Python 3.12.x** (or 3.11.x — anything 3.10+ works).
@@ -60,13 +76,10 @@ pip --version
 ```
 Should print Python 3.12.x and pip 24.x.
 
----
-
-## 2. Clone the repo
+## A2. Clone the repo
 
 You'll need a GitHub Personal Access Token (PAT) since the repo is private.
-You probably already have one set up on the Mac side — find it in your
-password manager, or generate a new one at
+Find it in your password manager, or generate a new one at
 <https://github.com/settings/tokens> (classic, with `repo` scope).
 
 In Command Prompt:
@@ -79,29 +92,26 @@ cd willettbot
 When git prompts for credentials, use your GitHub username + the PAT as the
 password. Windows will remember it after the first clone.
 
-**Verify:** you should see all the source files:
+**Verify:**
 ```
 dir
 ```
 Look for `main.js`, `recorder.py`, `runner.py`, `platform_helpers.py`,
 `platform_win.py`, etc.
 
----
-
-## 3. Install Node + Python dependencies
+## A3. Install Node + Python dependencies
 
 ```
 npm install
 ```
 
-This pulls Electron and electron-builder. Takes 1–3 minutes. There may be
-warnings about deprecated transitive deps — those are harmless.
+This pulls Electron and electron-builder. Takes 1–3 minutes. Warnings about
+deprecated transitive deps are harmless.
 
-**Verify:** `node_modules\` directory exists and has hundreds of subfolders.
+**Verify:** the `node_modules\` directory exists and has hundreds of
+subfolders.
 
----
-
-## 4. Run in dev mode
+## A4. First launch — bootstraps the Python venv
 
 ```
 npm start
@@ -114,56 +124,132 @@ What happens:
    and `pywin32` into it. **First launch takes ~30 seconds.**
 3. The hub UI appears.
 
-If the venv bootstrap fails, you'll see an error banner. The most common
-cause is python not being on PATH — re-check Step 1c.
+If the venv bootstrap fails, the most common cause is python not being on
+PATH — re-check Step A1c.
+
+**You're done with first-time setup.** From now on, follow Section B every
+time you boot into Windows.
 
 ---
 
-## 5. Smoke-test the platform layer
+# SECTION B — Returning to work (every session)
 
-Before testing record + replay, confirm the Windows backend is alive. Open
-a new Command Prompt (leave the app running) and:
+You finished Section A in a previous session. Today you booted Windows and
+want to keep working. Run through these steps in order — they're short.
+
+## B1. Open a fresh Command Prompt
+
+Win+R → type `cmd` → Enter.
+
+(A "fresh" one matters because old Command Prompt windows may have stale
+PATH from before you installed Python / Node / Git.)
+
+## B2. Pull the latest code from GitHub
+
+This is the step that catches whatever fixes got pushed from the Mac side
+since you last worked on Windows.
 
 ```
 cd %USERPROFILE%\willettbot
-python -c "import platform_helpers as p; print(p.PLATFORM_NAME); print(p.get_frontmost_app()); print(p.get_file_manager_name())"
+git pull
 ```
 
-Expected output:
+You should see lines like `Updating xxxxxxx..yyyyyyy` followed by a list of
+files that changed. If it just says `Already up to date.`, no new commits
+were pushed since your last session — that's fine, move on.
+
+If `git pull` complains about local changes, you probably edited something
+on the Windows side and didn't commit it. Either commit it or stash it:
 ```
-Windows
-Cmd      (or whatever app is in front)
-Explorer
+git stash
+git pull
+git stash pop
 ```
 
-If `get_frontmost_app()` returns an empty string, pywin32 isn't installed
-in your system Python. Install it:
+## B3. Launch the app
+
 ```
-pip install pywin32
+npm start
 ```
 
-(The bundled venv inside the app is separate — that one already got pywin32
-during the bootstrap. This system-Python install is just so the standalone
-`python -c` smoke test works.)
+The app should come up in a few seconds (no venv re-bootstrap needed —
+that only happens the first time, or if you delete `%APPDATA%\WillettBot\venv\`).
 
+If `npm start` errors with something about missing Node modules, run
+`npm install` once and try again — that means a `git pull` brought in new
+JS dependencies.
+
+## B4. Smoke-test the platform layer
+
+Before testing record + replay, confirm the Windows backend is alive. Open
+a SECOND Command Prompt (leave the app running in the first one) and run:
+
+```
+cd %USERPROFILE%\willettbot
+python platform_helpers.py
+```
+
+Expected output (something like):
+```
+PLATFORM_NAME:        Windows
+NATIVE_SCRIPT_ACTION: powershell
+python:               C:\Users\you\AppData\Local\Programs\Python\Python312\python.exe
 ---
+frontmost app:        Cmd        (or whatever app is in front)
+frontmost title:      Command Prompt
+file manager name:    Explorer
+file manager path:    (empty)
+```
 
-## 6. Record + replay test
+The script prints clear diagnostics if anything looks off. The two cases
+you might see:
 
-In WillettBot:
+**Case A — `frontmost app: (empty)` and a `DIAGNOSTIC: pywin32 is not
+installed in THIS Python` block.** That means the Python in your shell
+doesn't have pywin32. Fix:
+```
+py -m pip install pywin32
+```
+
+(`py` is the Python launcher that came with the python.org installer.
+`py -m pip` is more reliable than plain `pip` because it doesn't care
+whether `pip.exe` is on PATH.)
+
+OR, just use the app's venv Python — it always has pywin32 because the
+bootstrap installed it. Run:
+```
+"%APPDATA%\WillettBot\venv\Scripts\python.exe" platform_helpers.py
+```
+
+That one is guaranteed to work because npm start already populated it.
+
+**Case B — `frontmost app: (empty)` with no DIAGNOSTIC.** That means
+pywin32 is installed but the foreground window query returned nothing.
+Usually means the foreground was the desktop or a UAC dialog. Click on
+a normal app window (Notepad, Explorer) and re-run.
+
+## B5. Record + replay test
+
+In WillettBot (the running app from step B3):
 
 1. Click "Record New Script."
-2. Pick a hotkey or use the default.
+2. Pick a hotkey or use the default (F9 to start, F10 to stop).
 3. Do something tiny — open File Explorer, navigate into Downloads, click
-   on a file, switch to another app, stop recording.
-4. Save it with a name.
-5. Click Replay.
+   on a file, switch to another app.
+4. **Stop the recording.** Two ways — both should work now:
+   - Click the **Stop** button in the recorder UI, OR
+   - Press **F10** (or whatever your end hotkey is).
+5. The "Save Script" panel should appear with a filename and description
+   field. Fill them in and click **Save script**.
+6. Click **Replay**.
 
 What to look for:
+- ✅ The Save Script panel actually appears after Stop. (If it doesn't,
+  see "Common issues" → "Stop button doesn't open Save panel".)
 - ✅ Clicks land where you clicked during recording.
 - ✅ The compiled JSON includes `focus_app` and `open_file` actions, not
-  just raw clicks. (Open the script in the editor to see — the visual
-  builder shows them as friendly blocks.)
+  just raw clicks. Open the script in the editor — the visual builder
+  shows them as friendly blocks.
 - ✅ Replay actually opens the file you opened during recording, not a
   blind click on the old pixel coordinates.
 
@@ -171,12 +257,27 @@ If clicks don't fire at all, it's not a permissions thing on Windows —
 more likely pyautogui couldn't import. Check the dev console (Help menu →
 Toggle Developer Tools) for errors.
 
+## B6. Working loop (every time you find / fix something)
+
+When something breaks on Windows that you want to fix from the Mac side:
+
+1. **On Windows:** copy the exact error from the dev console / terminal.
+2. **On Mac:** open <https://claude.ai>, paste the error, ask for a fix.
+3. **On Mac:** apply the fix, then commit + push to GitHub.
+4. **On Windows:** `git pull` from `%USERPROFILE%\willettbot`, restart
+   the app (close it, `npm start` again).
+5. Re-test.
+
+That's the loop. The Mac side stays the source of truth; the Windows side
+is a copy that you keep refreshing with `git pull`.
+
 ---
 
-## 7. Build the Windows installer (optional, for distribution)
+# SECTION C — Building the Windows installer (optional, for distribution)
 
 This produces a `WillettBot Setup x.y.z.exe` you can give to other people.
-You don't need this for personal testing.
+You don't need this for personal testing — `npm start` runs the app
+directly from source.
 
 ```
 npm run dist:win
@@ -206,7 +307,7 @@ that step. Two options:
 
 2. **Write the script** — open <https://claude.ai>, paste the contents
    of `scripts-build/prepare-python.sh` (the Mac one), and ask Claude to
-   write the Windows PowerShell equivalent. It'll need to download a
+   write the Windows PowerShell equivalent. It needs to download a
    Windows-embeddable Python from <https://www.python.org/downloads/windows/>
    (the "embeddable package"), unpack it into `bundled-python\python\`,
    and pip-install pyautogui + pynput + pywin32 into it.
@@ -214,29 +315,41 @@ that step. Two options:
 For first-time testing, Option 1 is fine.
 
 **Code signing on Windows:** without an EV code-signing certificate
-(~$300/year), Windows will show a SmartScreen "Unknown publisher"
-warning when users run the installer. Users can click "More info" →
-"Run anyway" to proceed. That's acceptable for beta testing; for a real
-launch, get the EV cert.
+(~$300/year), Windows shows a SmartScreen "Unknown publisher" warning
+when users run the installer. Users can click "More info" → "Run anyway"
+to proceed. That's acceptable for beta testing; for a real launch, get
+the EV cert.
 
 ---
 
-## Common issues
+# Common issues
 
 **"npm start" hangs at "creating venv"**
 The system Python is missing or not on PATH. Open Command Prompt and run
-`python --version` — if it errors out, redo Step 1c (and make sure to
+`python --version` — if it errors out, redo Step A1c (and make sure to
 check "Add python.exe to PATH").
 
 **"pywin32 import failed" in the dev console**
-The venv bootstrap didn't finish. Delete `%APPDATA%\WillettBot\venv\`
+The venv bootstrap didn't finish cleanly. Delete `%APPDATA%\WillettBot\venv\`
 and restart `npm start` to re-bootstrap.
+
+**`platform_helpers.py` smoke test prints `frontmost app: (empty)`**
+See Step B4 above — this is almost always pywin32 missing in the shell's
+Python. Fix with `py -m pip install pywin32` or run the smoke test through
+the venv Python.
+
+**Stop button doesn't open the Save Script panel**
+This was a Windows-only bug in early builds. The fix is in the repo — make
+sure you've done `git pull` (Step B2) since 2026-04-27. If you're somehow
+on an old build, the workaround is to press your **end hotkey** (default
+F10) instead of clicking Stop. The hotkey path runs entirely inside the
+Python recorder and finalizes cleanly without involving the parent process.
 
 **Clicks "happen" but nothing visibly moves**
 On Windows this almost never happens (no Accessibility-style permission
-gate). If it does, the most likely cause is the cursor is somewhere with
-the FAILSAFE corner detection triggered. pyautogui treats the top-left
-pixel as "stop" — move the cursor away and try again.
+gate). If it does, the most likely cause is the cursor sitting in a screen
+corner with pyautogui's FAILSAFE detection triggered. pyautogui treats the
+top-left pixel as "stop" — move the cursor away and try again.
 
 **"GetForegroundWindow() returns 0"**
 The foreground window is the desktop or a system-protected app (UAC
@@ -246,13 +359,27 @@ prompt, login screen, etc.). Click on a normal app window first.
 Open the Help menu → Toggle Developer Tools → Console tab. Errors during
 spawn of the Python runner show up there with a real stack trace.
 
+**`git pull` says "Your local changes would be overwritten"**
+You edited a tracked file on Windows and didn't commit it. Either commit:
+```
+git add <file>
+git commit -m "windows-side change"
+git pull
+```
+…or stash and re-pop:
+```
+git stash
+git pull
+git stash pop
+```
+
 ---
 
-## When you're stuck
+# When you're stuck
 
 Open <https://claude.ai> in Edge, paste:
-1. What you were trying to do (one line).
+1. Which step you were on (e.g. "Section B step B4").
 2. The exact error message or screenshot.
 3. The output of `python --version` and `node --version`.
 
-I can help debug from there even without file access.
+I can help debug from there even without file access on the Windows side.

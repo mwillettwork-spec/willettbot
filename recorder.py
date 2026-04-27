@@ -1014,12 +1014,34 @@ def main():
         emit({"event": "started"})
 
     # SIGTERM from the Electron parent should end the recording cleanly.
+    # NOTE: this works on macOS / Linux where Node's process.kill('SIGTERM')
+    # delivers a real POSIX signal. On Windows, Node's .kill() always maps to
+    # TerminateProcess() — Python never gets a chance to run this handler
+    # before being killed. The stdin watcher below is the cross-platform
+    # backstop: parent writes "stop\n" to our stdin and we finalize cleanly.
     def _sigterm(signum, frame):
         rec.done_event.set()
     try:
         signal.signal(signal.SIGTERM, _sigterm)
     except Exception:
         pass
+
+    # Cross-platform stop channel: parent process writes a line containing
+    # "stop" to our stdin to request a clean finalize. This is the ONLY
+    # mechanism that works on Windows (see comment above). On Mac/Linux it
+    # arrives in parallel with SIGTERM; whichever wins the race is fine,
+    # both end up calling rec.done_event.set() and exit is idempotent.
+    def _stdin_stop_watcher():
+        try:
+            for line in sys.stdin:
+                if 'stop' in line.strip().lower():
+                    rec.done_event.set()
+                    return
+        except Exception:
+            # stdin closed / detached / not a real pipe — fall through.
+            # Recorder still exits via the end hotkey or SIGTERM.
+            pass
+    threading.Thread(target=_stdin_stop_watcher, daemon=True).start()
 
     kb_listener = keyboard.Listener(on_press=rec.on_key_press,
                                     on_release=rec.on_key_release)

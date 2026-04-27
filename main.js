@@ -1397,12 +1397,30 @@ ipcMain.on('record-start', async (event, opts) => {
   })
 })
 
-// ── RECORDER: cancel (user bailed out without pressing the end hotkey) ──
+// ── RECORDER: stop (user clicked Stop or bailed without the end hotkey) ──
+// CROSS-PLATFORM: write "stop\n" to the child's stdin instead of kill().
+// On Windows, process.kill('SIGTERM') maps to TerminateProcess() — the
+// Python recorder never gets to run its signal handler, never compiles, and
+// the UI never sees the 'done' event (so the Save Script panel never opens).
+// The stdin write is picked up by recorder.py's _stdin_stop_watcher thread
+// which sets done_event → main loop exits → compile() → emit('done').
+//
+// We do NOT null out recorderProc here — the 'close' event handler does that
+// once Python has actually exited. That keeps the duplicate-recorder guard
+// at spawn time honest if a stop is pending.
 ipcMain.on('record-stop', () => {
-  if (recorderProc) {
-    try { recorderProc.kill('SIGTERM') } catch (e) {}
-    recorderProc = null
-  }
+  if (!recorderProc) return
+  const proc = recorderProc
+  try { proc.stdin.write('stop\n') } catch (e) {}
+  // Belt-and-suspenders: if the child somehow doesn't notice the stdin write
+  // (pipe wedged, stdin already closed, recorder mid-crash), force-kill after
+  // a generous timeout so we don't leak a recorder process. By the time this
+  // fires we've already given up on a clean save.
+  setTimeout(() => {
+    if (recorderProc === proc && !proc.killed) {
+      try { proc.kill('SIGTERM') } catch (_) {}
+    }
+  }, 3000)
 })
 
 // ── RECORDER: save the compiled script under a user-chosen filename ──
