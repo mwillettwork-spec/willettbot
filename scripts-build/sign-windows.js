@@ -55,21 +55,40 @@ exports.default = async function (configuration) {
   console.log(`[sign-windows]   profile:  ${profile}`);
 
   // Microsoft `sign` CLI installed via `dotnet tool install --global sign`
-  // in the workflow. The trusted-signing subcommand reads
-  // AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET from env.
+  // in the workflow. Microsoft renamed the subcommand and arg flags from
+  // `trusted-signing` to `artifact-signing` to match the product rebrand.
+  // The artifact-signing subcommand reads AZURE_TENANT_ID / AZURE_CLIENT_ID /
+  // AZURE_CLIENT_SECRET from env via Azure DefaultAzureCredential.
   const cmd = [
-    'sign code trusted-signing',
-    '--trusted-signing-endpoint',            `"${endpoint}"`,
-    '--trusted-signing-account',             `"${account}"`,
-    '--trusted-signing-certificate-profile', `"${profile}"`,
+    'sign code artifact-signing',
+    '--artifact-signing-endpoint',            `"${endpoint}"`,
+    '--artifact-signing-account',             `"${account}"`,
+    '--artifact-signing-certificate-profile', `"${profile}"`,
     `"${filePath}"`,
   ].join(' ');
 
-  try {
-    execSync(cmd, { stdio: 'inherit', shell: true });
-    console.log(`[sign-windows] ✓ Signed: ${filePath}`);
-  } catch (err) {
-    console.error(`[sign-windows] ✗ Failed to sign ${filePath}: ${err.message}`);
-    throw err;
+  // Retry on transient Azure errors. Microsoft Identity occasionally returns
+  // 401 invalid_client for valid creds when their auth backend hiccups, and
+  // sometimes 429s for throttling when many sign calls fire in succession.
+  // Both are transient — same secret works on the next attempt. We retry
+  // up to 4 times with exponential backoff (2s, 4s, 8s, 16s) before giving up.
+  const MAX_ATTEMPTS = 5;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      execSync(cmd, { stdio: 'inherit', shell: true });
+      console.log(`[sign-windows] ✓ Signed: ${filePath}` +
+                  (attempt > 1 ? ` (attempt ${attempt})` : ''));
+      return;
+    } catch (err) {
+      if (attempt === MAX_ATTEMPTS) {
+        console.error(`[sign-windows] ✗ Failed to sign ${filePath} after ${MAX_ATTEMPTS} attempts: ${err.message}`);
+        throw err;
+      }
+      const backoff = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s, 16s
+      console.warn(`[sign-windows] ⚠ Attempt ${attempt} failed for ${filePath}, retrying in ${backoff/1000}s...`);
+      await sleep(backoff);
+    }
   }
 };
