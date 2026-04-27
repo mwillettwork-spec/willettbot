@@ -1,19 +1,19 @@
 {
-  "name": "Greet in TextEdit",
-  "description": "Safe starter script. Opens TextEdit, dismisses the Open panel if macOS shows one, forces a new blank document, and types a greeting. Works whether TextEdit was already running or not.",
+  "name": "Greet by name",
+  "description": "Cross-platform starter script. Opens your OS's default text editor (TextEdit on Mac, Notepad on Windows), forces a new blank document, and types a greeting.",
   "variables": {
     "name": "Myles"
   },
   "actions": [
     { "action": "say",          "message": "Starting greet script for {{name}}" },
-    { "action": "open_app",     "name": "TextEdit" },
-    { "action": "wait_for_app", "name": "TextEdit", "timeout": 20, "label": "wait until TextEdit is frontmost" },
+    { "action": "open_app",     "name": "{{TEXT_EDITOR}}" },
+    { "action": "wait_for_app", "name": "{{TEXT_EDITOR}}", "timeout": 20, "label": "wait until {{TEXT_EDITOR}} is frontmost" },
     { "action": "wait",         "seconds": 0.6, "label": "let the UI settle" },
 
-    { "action": "press",        "key": "escape", "label": "dismiss Open panel if one appeared" },
+    { "action": "press",        "key": "escape", "label": "dismiss any Open / file-picker panel that came up first" },
     { "action": "wait",         "seconds": 0.3 },
 
-    { "action": "hotkey",       "keys": ["command", "n"], "label": "force a new blank document" },
+    { "action": "hotkey",       "keys": ["{{MOD}}", "n"], "label": "force a new blank document (Cmd+N on Mac, Ctrl+N on Windows)" },
     { "action": "wait",         "seconds": 1.2, "label": "let the new doc window appear" },
 
     { "action": "type",         "text": "Hello {{name}} — this was written by WillettBot.\n" },

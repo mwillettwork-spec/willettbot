@@ -176,7 +176,12 @@ MOVE_SAMPLE_MIN_DISTANCE = 18     # pixels — require this much delta to record
 DOUBLE_CLICK_THRESHOLD   = 0.5    # seconds — two clicks within this merge into double_click
 DOUBLE_CLICK_RADIUS      = 6      # pixels — click positions must be within this radius to merge
 DRAG_MIN_DISTANCE        = 5      # pixels — mouse-down → mouse-up further than this is a drag
-MIN_WAIT                 = 0.4    # seconds — only gaps >= this become explicit wait actions
+MIN_WAIT                 = 0.15   # seconds — gaps >= this become explicit wait actions
+                                  # Tightened from 0.4 → 0.15 so replay timing
+                                  # tracks user-input timing more closely.
+                                  # pyautogui.PAUSE in runner.py is 0.05s,
+                                  # so wait actions below ~0.15s mostly get
+                                  # absorbed by that floor anyway.
 MOVE_DURATION_MIN        = 0.08   # seconds — minimum glide time so playback doesn't teleport
 MOVE_DURATION_MAX        = 1.5    # seconds — cap any single glide so long pauses don't stall
 
@@ -271,6 +276,23 @@ class Recorder:
             if mn:
                 self.active_modifiers.add(mn)
             return
+
+        # Sanity-check active_modifiers against the OS's real key state. On
+        # Windows this catches the false-positive-hotkey bug where pynput
+        # missed a Ctrl-release event (because focus changed, a modal stole
+        # it, etc.) and 'ctrl' is left stuck in active_modifiers — which
+        # would otherwise turn the very next plain-letter keypress into a
+        # bogus Ctrl+letter hotkey. On Mac/Linux the platform helper returns
+        # None, meaning "trust active_modifiers as-is" (pynput is reliable
+        # there). Any modifier the OS says ISN'T held gets discarded.
+        try:
+            real = platform.get_real_modifier_state()
+        except Exception:
+            real = None
+        if real is not None:
+            stale = self.active_modifiers - real
+            if stale:
+                self.active_modifiers -= stale
 
         # Is a non-shift modifier active? Then this is a hotkey combo.
         mods = self.active_modifiers - {'shift'}

@@ -1,6 +1,6 @@
 {
   "name": "Send Gmail",
-  "description": "Opens a new Gmail compose tab in your default browser with the To / Subject / Body pre-filled. Review it and press Send when ready. No password needed — you stay signed in through your browser.",
+  "description": "Opens a Gmail compose tab in your default browser with To / Subject / Body pre-filled. Review and Send. No password needed — uses your browser session.",
   "variables": {
     "to": "friend@example.com",
     "subject": "Hello from WillettBot",
@@ -8,20 +8,20 @@
   },
   "actions": [
     { "action": "say",
-      "message": "Opening Gmail compose in your default browser..." },
+      "message": "Opening Gmail compose..." },
 
     { "action": "open_file",
-      "label": "Launch a Gmail compose URL (works in any browser)",
+      "label": "Launch Gmail compose URL in default browser",
       "path": "https://mail.google.com/mail/?view=cm&fs=1&tf=1&to={{to|url}}&su={{subject|url}}&body={{body|url}}" },
 
     { "action": "wait",
       "seconds": 4,
-      "label": "Give Gmail a few seconds to load (sign in if it asks)" },
+      "label": "Give Gmail a moment to load" },
 
     { "action": "prompt",
       "kind": "confirm",
-      "message": "Gmail compose is open in your browser with the email ready for {{to}}. Review it there, then click the blue Send button — or press Cmd+Enter inside the Gmail window. Click Continue here when you're done (or Cancel if you changed your mind).",
-      "confirmLabel": "I sent it",
+      "message": "Review the email in your browser and click Send.",
+      "confirmLabel": "Done",
       "cancelLabel": "Cancel" },
 
     { "action": "say", "message": "Done." }

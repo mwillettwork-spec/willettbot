@@ -87,6 +87,42 @@ import threading as _threading
 _com_initialized = _threading.local()
 
 
+def get_real_modifier_state():
+    """Return the set of modifier names actually held down RIGHT NOW per the
+    OS, regardless of what events pynput has or hasn't delivered. Used by
+    the recorder to sanity-check active_modifiers before committing a key
+    event to a hotkey (otherwise a missed Ctrl-release leaves 'ctrl' stuck
+    in the recorder's set, and the next plain letter typed gets recorded
+    as Ctrl+letter — exactly the false-positive hotkey symptom).
+
+    Uses Win32 GetKeyState. The high-order bit is set when the key is
+    physically down. Modifiers checked: Ctrl, Shift, Alt, Win key.
+
+    Returns a set of strings: subset of {'ctrl', 'shift', 'alt', 'command'}.
+    'command' is mapped from the Win key for cross-platform name parity
+    (recorder.py + runner.py call the Win/Cmd modifier 'command' uniformly)."""
+    w = _w32()
+    if not w:
+        return set()
+    api = w['api']
+    try:
+        VK_CONTROL = 0x11
+        VK_SHIFT   = 0x10
+        VK_MENU    = 0x12   # Alt
+        VK_LWIN    = 0x5B
+        VK_RWIN    = 0x5C
+        held = set()
+        if api.GetAsyncKeyState(VK_CONTROL) & 0x8000: held.add('ctrl')
+        if api.GetAsyncKeyState(VK_SHIFT)   & 0x8000: held.add('shift')
+        if api.GetAsyncKeyState(VK_MENU)    & 0x8000: held.add('alt')
+        if (api.GetAsyncKeyState(VK_LWIN)   & 0x8000) or \
+           (api.GetAsyncKeyState(VK_RWIN)   & 0x8000):
+            held.add('command')
+        return held
+    except Exception:
+        return set()
+
+
 def _ensure_com():
     """Initialize COM apartment for the current thread if it hasn't been yet.
     Idempotent and thread-safe (each thread has its own _com_initialized
@@ -577,10 +613,23 @@ def open_file(path, app='', timeout=10.0):
 
 
 def open_directory_in_place(path, timeout=5.0):
-    """Retarget the foreground Explorer window to `path` instead of spawning
-    a new one. Uses the Shell.Application COM 'Navigate2' on the foreground
-    window. Falls back to False if no Explorer window is foreground (caller
-    should fall back to os.startfile)."""
+    """Retarget an existing Explorer window to `path` so we don't pile up
+    a new window per folder action. Strategy (in order):
+      1. Foreground Explorer — best match: the user's currently-active one.
+      2. Most recent Explorer window — picks up where a previous step left
+         off even if focus went elsewhere mid-script.
+      3. Any Explorer window — better to reuse a stale one than spawn yet
+         another fresh one.
+
+    Returns True if we successfully retargeted an existing window, False if
+    no Explorer window exists (caller spawns a new one via os.startfile).
+    Also raises that newly-retargeted window to the foreground so subsequent
+    inPlace actions in the same script find IT in step 1.
+
+    The earlier version of this function only checked the foreground window,
+    which is why scripts that opened, say, Downloads → Photos → Vacation
+    spawned three separate Explorer windows on Windows replay — the second
+    folder action ran before Explorer fully finished foregrounding."""
     if not _ensure_com():
         return False
     w = _w32()
@@ -588,15 +637,38 @@ def open_directory_in_place(path, timeout=5.0):
         return False
     try:
         front_hwnd = w['gui'].GetForegroundWindow()
+        target = None
+        # Strategy 1: foreground Explorer.
         for win in _shell_explorer_windows():
             try:
-                if int(win.HWND) != int(front_hwnd):
-                    continue
-                # Navigate2(URL) — accepts a filesystem path on Windows.
-                win.Navigate2(path)
-                return True
+                if int(win.HWND) == int(front_hwnd):
+                    target = win
+                    break
             except Exception:
                 continue
+        # Strategy 2 + 3: any Explorer window. Shell.Windows() is roughly
+        # ordered by creation time; the LAST entry is the most recent.
+        if target is None:
+            wins = list(_shell_explorer_windows())
+            if wins:
+                target = wins[-1]
+        if target is None:
+            return False
+        try:
+            target.Navigate2(path)
+        except Exception:
+            return False
+        # Bring the navigated window to the foreground so the next inPlace
+        # action picks it up via Strategy 1 (and so the user sees what's
+        # happening). Best-effort — don't fail the call if focus swap
+        # gets blocked (Windows can refuse cross-process foreground when
+        # nothing has been clicked recently).
+        try:
+            hwnd = int(target.HWND)
+            _set_foreground_window(hwnd)
+        except Exception:
+            pass
+        return True
     except Exception:
         pass
     return False

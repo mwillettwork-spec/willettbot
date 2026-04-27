@@ -405,3 +405,12 @@ def run_native_script(script, timeout=30.0):
         err = (r.stderr or '').strip() or 'osascript exit ' + str(r.returncode)
         raise RuntimeError('AppleScript failed: ' + err)
     return (r.stdout or '').strip()
+
+
+def get_real_modifier_state():
+    """Stub on macOS: pynput on macOS is reliable about modifier state, so we
+    don't need to second-guess it. The cross-platform recorder calls this
+    every key press; returning None means 'no override, trust active_modifiers
+    as-is.' (Returning an empty set here would FORCE-CLEAR active_modifiers
+    every press, which is wrong on Mac.)"""
+    return None

@@ -510,6 +510,23 @@ def run_script(script):
     actions = script.get('actions', [])
     name = script.get('name', 'Untitled')
 
+    # Built-in platform variables — these auto-resolve to the right per-OS
+    # value so cross-platform seed scripts can use {{TEXT_EDITOR}},
+    # {{FILE_MANAGER}}, {{MOD}} etc. without a per-OS branch in the JSON.
+    # User-defined variables take precedence (we only fill defaults).
+    _platform_defaults = {
+        'TEXT_EDITOR':  'TextEdit'   if platform.is_mac() else
+                        'Notepad'    if platform.is_windows() else
+                        'gedit',
+        'FILE_MANAGER': platform.get_file_manager_name(),  # Finder | Explorer | Files
+        # Logical "primary modifier" for shortcuts — Cmd on Mac, Ctrl elsewhere.
+        # Lets a script say {{MOD}}+n for new-document and have it work on both.
+        'MOD':          'command'    if platform.is_mac() else 'ctrl',
+        'PLATFORM':     platform.PLATFORM_NAME,
+    }
+    for k, v in _platform_defaults.items():
+        variables.setdefault(k, v)
+
     # AXIsProcessTrusted() is advisory — can return false negatives on fresh
     # unsigned binaries after a rebuild even when CGEventPost works fine. So
     # we WARN but don't block, letting pyautogui actually try. If the grant

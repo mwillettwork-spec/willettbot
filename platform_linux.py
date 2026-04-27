@@ -425,3 +425,10 @@ def run_native_script(script, timeout=30.0):
         err = (r.stderr or '').strip() or 'bash exit ' + str(r.returncode)
         raise RuntimeError('Shell script failed: ' + err)
     return (r.stdout or '').strip()
+
+
+def get_real_modifier_state():
+    """Stub on Linux. Querying real key state cross-DE is messy (X11 has
+    XQueryKeymap; Wayland has nothing standard), and pynput is generally
+    reliable on Linux. Return None to mean 'don't override active_modifiers'."""
+    return None
