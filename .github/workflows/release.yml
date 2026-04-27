@@ -37,12 +37,18 @@ jobs:
   # ───────────────────────────────────────────────────────────────────
   build-mac:
     name: Build Mac DMG
-    runs-on: macos-13   # Intel runner; matches the x64 DMG target in package.json
+    runs-on: macos-latest   # Apple Silicon runner; we install Rosetta below to run the x64 Python tarball
     timeout-minutes: 45
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Install Rosetta 2
+        # Our DMG target is x64 and prepare-python.sh downloads x86_64-apple-darwin Python.
+        # macos-latest is now Apple Silicon (arm64), so we need Rosetta to run x64 binaries
+        # during the build (specifically: the bundled python3 invoking pip).
+        run: softwareupdate --install-rosetta --agree-to-license
 
       - name: Setup Node 20
         uses: actions/setup-node@v4
