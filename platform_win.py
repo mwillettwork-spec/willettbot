@@ -513,16 +513,12 @@ def open_file(path, app='', timeout=10.0):
                 err = (r.stderr or '').strip() or 'start exit ' + str(r.returncode)
                 return (False, err)
             return (True, '')
-        # No specific app — use os.startfile for files, `start` for URLs.
-        if is_url:
-            subprocess.run(
-                ['cmd', '/c', 'start', '', path],
-                capture_output=True, text=True, timeout=timeout
-            )
-            return (True, '')
-        # os.startfile is the cleanest "open with default" on Windows. Returns
-        # immediately; doesn't block on the spawned process. Raises OSError
-        # if no association exists.
+        # No specific app — os.startfile() handles BOTH files and URLs on
+        # Windows. CRITICAL: do NOT route URLs through `cmd /c start ""` —
+        # cmd.exe treats `&` as a command separator and chops Gmail-style
+        # URLs (?view=cm&fs=1&tf=1&to=...) at the first `&`, opening only
+        # the URL prefix. os.startfile() goes straight to ShellExecute and
+        # never sees cmd.exe's parser, so the full URL is preserved.
         try:
             os.startfile(path)
             return (True, '')

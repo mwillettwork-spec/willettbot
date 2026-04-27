@@ -112,6 +112,44 @@ def modifier_name(key):
     return None
 
 
+def _modified_key_name(key):
+    """Resolve a non-modifier key event to a single combo-name letter/digit
+    (e.g. 'c' for the C key, '7' for the 7 key) — robust to a Windows pynput
+    quirk where key.char comes back as a control character when Ctrl is held
+    (\\x03 for Ctrl+C, \\x16 for Ctrl+V, etc.) and the literal char is wrong.
+
+    Strategy:
+      1. Prefer key.vk (Win32 virtual key code on Windows; HID/macOS/X11
+         scancode-mapped on the others). For ASCII letters and digits, the
+         VK codes happen to align with ASCII: 0x30-0x39 = '0'-'9',
+         0x41-0x5A = 'A'-'Z'. We lowercase letters because runner.py /
+         pyautogui expect lowercase combo names ('ctrl', 'c').
+      2. Fall back to key.char. If that came through as a control character
+         (\\x01-\\x1A), translate it back to its source letter.
+      3. Final fallback: special-key table (function keys, arrows, etc.).
+    Returns None if we genuinely can't make sense of the key — caller skips."""
+    vk = getattr(key, 'vk', None)
+    if isinstance(vk, int):
+        if 0x30 <= vk <= 0x39:                # digits 0-9
+            return chr(vk)
+        if 0x41 <= vk <= 0x5A:                # letters A-Z (return lowercase)
+            return chr(vk + 0x20)
+    # Try the character. May be None (no .char attr), a printable letter, or
+    # a control character on Windows when modifiers are active.
+    try:
+        char = key.char
+    except AttributeError:
+        char = None
+    if char and len(char) == 1:
+        o = ord(char)
+        if 1 <= o <= 26:                       # \x01-\x1A → 'a'-'z'
+            return chr(o + ord('a') - 1)
+        if char.isalnum():
+            return char.lower()
+    # Special key (F1, arrows, etc.) — use the existing table.
+    return SPECIAL_KEY_NAMES.get(key)
+
+
 def hotkey_matches(key, hotkey_name):
     """Does this key event match the single-key hotkey (e.g. 'f9', 'esc',
     'return', 'shift')? We normalize a few friendly aliases to their pynput
@@ -244,13 +282,13 @@ class Recorder:
 
         if mods:
             keys_list = sorted(mods)
-            if char:
-                keys_list.append(char)
-            else:
-                sk = SPECIAL_KEY_NAMES.get(key)
-                if not sk:
-                    return
-                keys_list.append(sk)
+            # Use vk-first resolution so Ctrl+C / Ctrl+V record correctly on
+            # Windows (where pynput reports key.char as a control character
+            # when Ctrl is held — see _modified_key_name docstring).
+            combo = _modified_key_name(key)
+            if not combo:
+                return
+            keys_list.append(combo)
             self._record(now, {"action": "hotkey", "keys": keys_list})
             return
 
