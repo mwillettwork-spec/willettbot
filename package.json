@@ -1,6 +1,6 @@
 {
   "name": "willettbot",
-  "version": "1.0.26",
+  "version": "1.0.27",
   "description": "Desktop automation for non-technical users — record, edit, and replay macros.",
   "main": "main.js",
   "author": {
@@ -41,6 +41,7 @@
     "afterPack": "./scripts-build/after-pack.js",
     "files": [
       "main.js",
+      "account.js",
       "hub.html",
       "index.html",
       "toast.html",
