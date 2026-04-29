@@ -337,6 +337,11 @@ function pruneFavorites(list) {
 const { verifyKey: verifyLicenseKey, PREFIX: LICENSE_PREFIX } =
   require('./licensing/keygen.js')
 
+// Email/account-based licensing path. Lives alongside the old offline-key
+// path during the migration: existing beta testers keep their keys working,
+// new users sign in with email and the server tells us if they're paid.
+const account = require('./account')
+
 const PUB_KEY_PATH = path.join(__dirname, 'licensing', 'public_key.pem')
 let PUB_KEY_PEM = null
 try {
@@ -403,6 +408,44 @@ function currentActivationState() {
            activatedAt: rec.activatedAt || null }
 }
 
+// Combined gate. Returns the first auth path that says we're activated,
+// or a "not activated" verdict that distinguishes the cases for the UI.
+//
+//   source: 'key'     → grandfathered offline key still valid
+//   source: 'account' → signed-in user with a licensed subscription (cached)
+//   source: 'none'    → neither path resolved
+//
+// This is sync — both the key check and the cached account check are local
+// disk reads. The actual /api/license server poll happens out-of-band on
+// app launch and after sign-in (see refreshAccountLicenseInBackground).
+function currentLicenseState() {
+  const keyState = currentActivationState()
+  if (keyState.activated) {
+    return { activated: true, source: 'key', info: keyState.info,
+             activatedAt: keyState.activatedAt }
+  }
+  const accountState = account.getCachedLicenseState()
+  if (accountState.activated) {
+    return { activated: true, source: 'account', payload: accountState.payload }
+  }
+  // Surface both reasons so the UI can give a sensible message: e.g. if the
+  // user used to have a key that expired AND they're not signed in, we want
+  // to lean toward "sign in" not "your key expired."
+  return { activated: false, source: 'none',
+           keyState, accountState }
+}
+
+// Fire-and-forget refresh that pings /api/license to update the cached
+// verdict in account.json. Called on app launch, after sign-in, and on
+// explicit user action. Errors are swallowed — the cache fallback in
+// account.js handles flaky networks.
+function refreshAccountLicenseInBackground() {
+  // No token → nothing to refresh.
+  if (!account.loadAccount()) return
+  account.getLicenseState({ forceRefresh: true })
+    .catch(err => console.error('[willettbot] license refresh failed:', err))
+}
+
 // Track the main window so we can surface native dialogs & refocus it.
 let mainWin = null
 
@@ -430,6 +473,10 @@ app.whenReady().then(() => {
   // Fire the auto-update check. Safe to call — guards internally against
   // dev mode and missing dependency. Never blocks window creation.
   try { setupAutoUpdate() } catch (e) { console.error('[setupAutoUpdate]', e) }
+  // Refresh the license cache for signed-in users so cancellations
+  // / new payments propagate within a launch instead of lingering up
+  // to the cache TTL. No-op if the user isn't signed in via account.
+  refreshAccountLicenseInBackground()
 })
 
 // Never leave a runaway clicker or script behind when the app quits.
@@ -1055,11 +1102,76 @@ ipcMain.handle('legal-doc', async (event, which) => {
 // form-submit target; returns { ok, info | error }. Rejects bad keys
 // loudly but doesn't persist them so the user can retry without leaving
 // a broken file behind.
+//
+// We return the combined state (key OR account) so the hub can transition
+// to the splash regardless of which auth path the user used. The keyState/
+// accountState breakdown is included so the hub can give a precise message
+// when neither path is active.
 ipcMain.handle('check-activation', async () => {
   try {
-    return { ok: true, ...currentActivationState() }
+    const st = currentLicenseState()
+    return { ok: true, ...st }
   } catch (e) {
-    return { ok: false, error: e.message, activated: false }
+    return { ok: false, error: e.message, activated: false, source: 'none' }
+  }
+})
+
+// ── ACCOUNT IPC (email/sign-in flow) ──
+// New world. The hub uses these on the activation screen's "Sign in"
+// button and afterward for the status bar. Old activate-key path stays
+// available below so beta keys keep working through the migration.
+
+// Run the browser-handoff sign-in. Resolves with { ok, summary } once the
+// user finishes signing in in their browser, or { ok:false, error } on
+// timeout / failure. After success we kick off a license refresh so the
+// caller can transition to the hub knowing the cache is hot.
+ipcMain.handle('account-sign-in', async () => {
+  try {
+    await account.signIn()
+    // Try to populate lastLicense before we report back, so the hub can
+    // immediately read a hot cache and skip the activation screen. We don't
+    // fail the sign-in if this lookup hiccups — the cache is the fallback.
+    try {
+      await account.getLicenseState({ forceRefresh: true })
+    } catch (e) {
+      console.error('[willettbot] post-signin license refresh failed:', e)
+    }
+    return { ok: true, summary: account.getCurrentAccountSummary() }
+  } catch (e) {
+    return { ok: false, error: e.message || 'Sign-in failed.' }
+  }
+})
+
+// Force a server check now (e.g. user clicked "Refresh subscription" in
+// the status bar after upgrading via the website). Returns the resolved
+// license state.
+ipcMain.handle('account-refresh-license', async () => {
+  try {
+    const state = await account.getLicenseState({ forceRefresh: true })
+    return { ok: true, state, summary: account.getCurrentAccountSummary() }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+// Read-only summary for the status bar UI ("Signed in as foo@bar.com").
+ipcMain.handle('account-summary', async () => {
+  try {
+    return { ok: true, summary: account.getCurrentAccountSummary() }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+// Drop the stored token + cached license. Sends the user back to the
+// activation screen. We do NOT also clear the old activation.json — those
+// are independent auth paths during the migration.
+ipcMain.handle('account-sign-out', async () => {
+  try {
+    account.signOut()
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e.message }
   }
 })
 
@@ -1283,13 +1395,13 @@ function startScriptProc(filename, variables, reply, pythonBin) {
 
 // Activation gate for anything that actually automates the desktop.
 // The hub is expected to block these UIs behind the activation screen, but
-// we enforce server-side too so a poked renderer can't sneak past.
+// we enforce in main too so a poked renderer can't sneak past.
 function assertActivatedOrReply(replyFn) {
-  const st = currentActivationState()
+  const st = currentLicenseState()
   if (st.activated) return true
   replyFn('script-event', {
     event: 'error',
-    message: 'WillettBot isn\'t activated. Enter your activation key to run scripts.'
+    message: 'WillettBot isn\'t activated. Sign in to your account to run scripts.'
   })
   return false
 }
@@ -1394,10 +1506,10 @@ ipcMain.handle('delete-script', async (event, filename) => {
 // the filename/description.
 ipcMain.on('record-start', async (event, opts) => {
   // Activation gate: recording is an automation feature too.
-  if (!currentActivationState().activated) {
+  if (!currentLicenseState().activated) {
     event.reply('record-event', {
       event: 'error',
-      message: 'WillettBot isn\'t activated — enter your key to enable recording.'
+      message: 'WillettBot isn\'t activated — sign in to enable recording.'
     })
     return
   }

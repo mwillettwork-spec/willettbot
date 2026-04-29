@@ -1221,29 +1221,61 @@
 
   <!-- ── ACTIVATION VIEW ──
        Shown before anything else on cold launch. On success we transition to
-       the splash view, then the hub. Skipped entirely if a valid activation
-       is already persisted on disk. -->
+       the splash view, then the hub. Skipped entirely if a valid account
+       sign-in OR a valid offline key is already persisted on disk.
+
+       Primary path: sign in with email. We open the user's default browser
+       to willettbot.com, they finish the magic-link flow, and the browser
+       redirects back to a localhost callback that hands a device token back
+       to this app (see account.js).
+
+       Legacy path: the old offline-key textarea is hidden behind a toggle
+       so existing beta testers can still activate while we migrate everyone
+       to email accounts. -->
   <div id="view-activation" class="view active">
     <div class="act-card">
-      <h2 class="act-title">Activate WillettBot</h2>
-      <p class="act-sub">Paste your activation key to unlock recording and scripts.
-         Beta keys are free for friends &amp; family — just ask Myles.</p>
-      <label class="act-label" for="act-key">Activation key</label>
-      <textarea id="act-key" class="act-input" spellcheck="false" autocapitalize="off"
-                autocomplete="off" autocorrect="off"
-                placeholder="willettbot-..."></textarea>
+      <h2 class="act-title">Welcome to WillettBot</h2>
+      <p class="act-sub">Sign in to unlock recording and scripts. We'll open your
+         default browser so you can finish the magic-link sign-in there.</p>
+
       <div class="act-row">
-        <button class="act-btn" id="act-submit" onclick="submitActivation()">Activate</button>
-        <div class="act-msg" id="act-msg" role="status" aria-live="polite"></div>
+        <button class="act-btn" id="act-signin-btn" onclick="submitSignIn()">Sign in with email</button>
+        <div class="act-msg" id="act-signin-msg" role="status" aria-live="polite"></div>
       </div>
       <div class="act-hint">
-        Keys are validated locally — no internet required. Your key is stored in
-        your user data folder so you only have to enter it once.
+        New here? You'll create an account on the same screen — just enter your
+        email and click the link we send. A WillettBot subscription unlocks all
+        recording and replay features.
       </div>
+
+      <!-- Legacy offline-key path. Hidden by default; expandable for beta
+           testers who already have a key. We'll remove this section after
+           the migration window closes. -->
+      <details id="act-legacy-key" style="margin-top:22px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.08)">
+        <summary style="cursor:pointer;font-size:12px;color:var(--text3);user-select:none">
+          Have an existing activation key?
+        </summary>
+        <div style="margin-top:14px">
+          <label class="act-label" for="act-key">Activation key</label>
+          <textarea id="act-key" class="act-input" spellcheck="false" autocapitalize="off"
+                    autocomplete="off" autocorrect="off"
+                    placeholder="willettbot-..."></textarea>
+          <div class="act-row">
+            <button class="act-btn" id="act-submit" onclick="submitActivation()">Activate key</button>
+            <div class="act-msg" id="act-msg" role="status" aria-live="polite"></div>
+          </div>
+          <div class="act-hint">
+            Keys are validated locally — no internet required. We're moving
+            beta testers to email accounts soon; this option will disappear
+            in a future build.
+          </div>
+        </div>
+      </details>
+
       <!-- Legal pre-activation agreement. Clicking either link opens the
            full document in a modal — users can read both before activating. -->
       <div style="margin-top:18px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.08);font-size:11px;color:var(--text3);text-align:center;line-height:1.5">
-        By activating WillettBot you agree to our
+        By signing in to WillettBot you agree to our
         <a href="#" onclick="event.preventDefault(); openLegalDoc('terms')" style="color:var(--accent);text-decoration:underline">Terms of Use</a>
         and
         <a href="#" onclick="event.preventDefault(); openLegalDoc('privacy')" style="color:var(--accent);text-decoration:underline">Privacy Policy</a>.
@@ -1741,10 +1773,15 @@
   }
 
   // ── ACTIVATION ──
-  // On cold launch we ask main.js whether a valid key is already persisted.
-  // If yes, skip straight to the splash. If no, leave view-activation active.
-  // submitActivation() validates the pasted key and transitions on success.
+  // On cold launch we ask main.js whether either auth path is satisfied:
+  // an offline key (legacy) or a signed-in account with cached "active"
+  // license. If yes, skip straight to the splash. If no, leave the
+  // activation view active.
+  //
+  // submitSignIn()    → primary path: opens browser, waits for token.
+  // submitActivation() → legacy path: pastes an offline key.
   var _activationInfo = null
+  var _licenseSource  = null   // 'key' | 'account' | null
 
   async function bootActivationGate() {
     if (!ipcRenderer) {
@@ -1759,24 +1796,72 @@
     try {
       var r = await ipcRenderer.invoke('check-activation')
       if (r && r.activated) {
-        _activationInfo = r.info
+        _licenseSource = r.source || null
+        _activationInfo = r.info || (r.payload || null)
         document.getElementById('view-activation').classList.remove('active')
         document.getElementById('view-splash').classList.add('active')
         renderActivationStatusBar(r)
       } else {
-        // Keep activation view active. If there's a stale/expired key on disk
-        // show a friendly message so the user knows why they're here.
-        var msg = document.getElementById('act-msg')
-        if (r && r.expired) {
-          msg.textContent = 'Your previous key expired — paste a new one to continue.'
-          msg.className = 'act-msg err'
-        } else if (r && r.reason && r.reason !== 'no public key bundled') {
-          // Silently tolerate the "no key yet" case.
+        // Show a hint if the user used to have a valid key that expired.
+        // Silent for the clean first-launch case.
+        var keyMsg = document.getElementById('act-msg')
+        var ks = r && r.keyState
+        if (keyMsg && ks && ks.expired) {
+          keyMsg.textContent = 'Your previous key expired — sign in with email or paste a new key.'
+          keyMsg.className = 'act-msg err'
         }
       }
     } catch (e) {
-      var m = document.getElementById('act-msg')
+      var m = document.getElementById('act-signin-msg')
       if (m) { m.textContent = 'Activation check failed: ' + e.message; m.className = 'act-msg err' }
+    }
+  }
+
+  // Primary sign-in path. Triggers main.js to open the user's browser to
+  // willettbot.com/desktop-auth and waits for the device-token callback.
+  // The IPC call resolves only after the user either finishes signing in
+  // or the 5-minute timeout elapses.
+  async function submitSignIn() {
+    var btn = document.getElementById('act-signin-btn')
+    var msg = document.getElementById('act-signin-msg')
+    if (!btn || !msg) return
+    if (!ipcRenderer) {
+      msg.textContent = 'Sign-in only works inside the WillettBot app.'
+      msg.className = 'act-msg err'
+      return
+    }
+    btn.disabled = true
+    var originalText = btn.textContent
+    btn.textContent = 'Waiting for browser…'
+    msg.textContent = 'We opened your browser. Finish signing in there, then come back.'
+    msg.className = 'act-msg'
+    try {
+      var r = await ipcRenderer.invoke('account-sign-in')
+      if (r && r.ok) {
+        _licenseSource  = 'account'
+        _activationInfo = null
+        msg.textContent = '✓ Signed in — welcome.'
+        msg.className = 'act-msg ok'
+        renderActivationStatusBar({
+          activated: true,
+          source: 'account',
+          payload: r.summary || null,
+        })
+        setTimeout(function() {
+          document.getElementById('view-activation').classList.remove('active')
+          document.getElementById('view-splash').classList.add('active')
+        }, 500)
+      } else {
+        msg.textContent = (r && r.error) || 'Sign-in failed.'
+        msg.className = 'act-msg err'
+        btn.disabled = false
+        btn.textContent = originalText
+      }
+    } catch (e) {
+      msg.textContent = 'Sign-in error: ' + e.message
+      msg.className = 'act-msg err'
+      btn.disabled = false
+      btn.textContent = originalText
     }
   }
 
@@ -1823,19 +1908,36 @@
     }
   }
 
-  // Persistent top-right badge showing "beta · expires …" so the user never
-  // forgets they're on a time-limited key.
+  // Persistent top-right badge. For account-source state shows "personal ·
+  // foo@bar.com"; for key-source state shows "beta · 14d left" exactly as
+  // before. Sign-out clears the path that's currently active.
   function renderActivationStatusBar(state) {
     var existing = document.getElementById('act-status-bar')
     if (existing) existing.remove()
-    if (!state || !state.info) return
+    if (!state) return
+
     var bar = document.createElement('div')
     bar.id = 'act-status-bar'
     bar.className = 'act-status-bar'
-    var tier = state.info.tier || 'beta'
-    var exp  = state.info.expires ? new Date(state.info.expires) : null
-    var left = exp ? Math.max(0, Math.round((exp.getTime() - Date.now()) / 86400000)) : null
-    bar.textContent = tier + (left !== null ? ' · ' + left + 'd left' : '')
+
+    var source = state.source || (state.info ? 'key' : 'account')
+    var labelText = ''
+    if (source === 'key' && state.info) {
+      var tier = state.info.tier || 'beta'
+      var exp  = state.info.expires ? new Date(state.info.expires) : null
+      var left = exp ? Math.max(0, Math.round((exp.getTime() - Date.now()) / 86400000)) : null
+      labelText = tier + (left !== null ? ' · ' + left + 'd left' : '')
+    } else if (source === 'account') {
+      var p = state.payload || {}
+      var planName = p.tier || p.plan || 'personal'
+      var emailLabel = p.email || ''
+      labelText = planName + (emailLabel ? ' · ' + emailLabel : '')
+    } else {
+      // Nothing to show — bail without rendering an empty pill.
+      return
+    }
+    bar.textContent = labelText
+
     var tourBtn = document.createElement('button')
     tourBtn.textContent = 'tour'
     tourBtn.title = 'Replay the intro walkthrough'
@@ -1843,14 +1945,25 @@
       if (typeof startTutorial === 'function') startTutorial()
     }
     bar.appendChild(tourBtn)
+
     var btn = document.createElement('button')
     btn.textContent = 'sign out'
-    btn.title = 'Remove activation from this machine'
-    btn.onclick = async function() {
-      if (!ipcRenderer) return
-      if (!confirm('Sign out? You\'ll need to paste your key again.')) return
-      try { await ipcRenderer.invoke('deactivate') } catch (e) {}
-      location.reload()
+    if (source === 'account') {
+      btn.title = 'Sign out of your WillettBot account on this machine'
+      btn.onclick = async function() {
+        if (!ipcRenderer) return
+        if (!confirm('Sign out of WillettBot? You\'ll need to sign in again with your email.')) return
+        try { await ipcRenderer.invoke('account-sign-out') } catch (e) {}
+        location.reload()
+      }
+    } else {
+      btn.title = 'Remove activation from this machine'
+      btn.onclick = async function() {
+        if (!ipcRenderer) return
+        if (!confirm('Sign out? You\'ll need to paste your key again.')) return
+        try { await ipcRenderer.invoke('deactivate') } catch (e) {}
+        location.reload()
+      }
     }
     bar.appendChild(btn)
     document.body.appendChild(bar)
