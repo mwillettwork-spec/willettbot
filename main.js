@@ -1446,7 +1446,11 @@ ipcMain.on('script-step-error-response', (event, response) => {
 })
 
 // ── SCRIPTS: stop the runner ──
+// Also marks any active workflow as aborted, so when the killed script's
+// terminal event fires (or its close-handler fabricates one) the workflow
+// emits a clean 'workflow-stopped' instead of trying to queue the next step.
 ipcMain.on('stop-script', () => {
+  if (activeWorkflow) activeWorkflow.aborted = true
   if (scriptProc) {
     try { scriptProc.kill('SIGTERM') } catch (e) {}
     scriptProc = null
@@ -1826,4 +1830,232 @@ ipcMain.handle('delete-schedule', async (event, id) => {
     try { mainWin.webContents.send('schedules-changed', {}) } catch (e) {}
   }
   return { ok: true, removed: before - data.items.length }
+})
+
+// ── WORKFLOWS ──────────────────────────────────────────────────────────────
+// A "workflow" is just an ordered list of saved-script filenames. Running a
+// workflow runs each script as a separate runner.py subprocess in sequence,
+// reusing every existing piece of infrastructure (prompts, manual_input,
+// step-error recovery, the stop button, the output log) without changes.
+// Step-to-step state is intentionally NOT shared — each script runs with
+// its own variables namespace. Cross-script variable passing can be added
+// later if a real use case shows up.
+
+const WORKFLOWS_FILE = path.join(DATA_DIR, 'workflows.json')
+
+function loadWorkflows() {
+  try {
+    if (!fs.existsSync(WORKFLOWS_FILE)) return []
+    const raw = fs.readFileSync(WORKFLOWS_FILE, 'utf8')
+    const parsed = JSON.parse(raw)
+    // File format: { workflows: [...] }. Treat anything else as empty so a
+    // hand-edited / corrupt file doesn't kill the UI.
+    if (!parsed || !Array.isArray(parsed.workflows)) return []
+    return parsed.workflows
+  } catch (e) {
+    console.error('[willettbot] workflows load failed:', e)
+    return []
+  }
+}
+
+function saveWorkflows(list) {
+  try {
+    fs.writeFileSync(WORKFLOWS_FILE,
+                     JSON.stringify({ workflows: list }, null, 2), 'utf8')
+    return true
+  } catch (e) {
+    console.error('[willettbot] workflows save failed:', e)
+    return false
+  }
+}
+
+ipcMain.handle('list-workflows', async () => {
+  return { ok: true, workflows: loadWorkflows() }
+})
+
+ipcMain.handle('save-workflow', async (event, payload) => {
+  if (!payload || typeof payload.name !== 'string' || !payload.name.trim()) {
+    return { ok: false, error: 'Name is required.' }
+  }
+  if (!Array.isArray(payload.steps) || !payload.steps.length) {
+    return { ok: false, error: 'A workflow needs at least one step.' }
+  }
+  // Each step must reference an existing script file. Catching this here
+  // instead of at run time means the user finds out about a missing script
+  // when they save the workflow, not three seconds into running it.
+  for (const s of payload.steps) {
+    if (!s || typeof s.script !== 'string' || !s.script) {
+      return { ok: false, error: 'Each step must reference a saved script.' }
+    }
+    if (!fs.existsSync(path.join(SCRIPTS_DIR, s.script))) {
+      return { ok: false, error: 'Script not found: ' + s.script }
+    }
+  }
+
+  const list = loadWorkflows()
+  const now = new Date().toISOString()
+  const cleanSteps = payload.steps.map(s => ({ script: s.script }))
+  if (payload.id) {
+    const i = list.findIndex(w => w.id === payload.id)
+    if (i >= 0) {
+      list[i] = Object.assign({}, list[i], {
+        name:        payload.name.trim(),
+        description: (payload.description || '').trim(),
+        steps:       cleanSteps,
+        updatedAt:   now
+      })
+    } else {
+      // The id was passed but doesn't exist on disk — treat as a new entry
+      // (could happen if the file was deleted out from under the editor).
+      list.push({
+        id:          payload.id,
+        name:        payload.name.trim(),
+        description: (payload.description || '').trim(),
+        steps:       cleanSteps,
+        createdAt:   now,
+        updatedAt:   now
+      })
+    }
+  } else {
+    const id = 'wf_' + Date.now().toString(36) + '_' +
+               Math.random().toString(36).slice(2, 8)
+    list.push({
+      id:          id,
+      name:        payload.name.trim(),
+      description: (payload.description || '').trim(),
+      steps:       cleanSteps,
+      createdAt:   now,
+      updatedAt:   now
+    })
+  }
+  saveWorkflows(list)
+  return { ok: true, workflows: list }
+})
+
+ipcMain.handle('delete-workflow', async (event, id) => {
+  const list = loadWorkflows().filter(w => w.id !== id)
+  saveWorkflows(list)
+  return { ok: true, workflows: list }
+})
+
+// ── WORKFLOW ORCHESTRATION ─────────────────────────────────────────────────
+// activeWorkflow is non-null while a workflow is in flight. Stop-script
+// flips `aborted` so the next step doesn't queue. The current step's
+// terminal events (script-done / error / failsafe / stopped) are intercepted
+// in `wrapped` below and used to decide whether to advance or abort.
+let activeWorkflow = null
+
+function startWorkflow(wf, baseReply, pythonBin) {
+  if (activeWorkflow || scriptProc) {
+    baseReply('script-event', {
+      event: 'error',
+      message: 'Another script or workflow is already running. Stop it first.'
+    })
+    return false
+  }
+  if (!wf || !Array.isArray(wf.steps) || !wf.steps.length) {
+    baseReply('script-event', { event: 'error', message: 'Workflow has no steps.' })
+    return false
+  }
+  activeWorkflow = {
+    id: wf.id,
+    name: wf.name,
+    steps: wf.steps,
+    idx: 0,
+    aborted: false,
+    reply: baseReply,
+    pythonBin: pythonBin
+  }
+  baseReply('script-event', {
+    event: 'workflow-start',
+    name: wf.name,
+    total: wf.steps.length
+  })
+  runNextWorkflowStep()
+  return true
+}
+
+function runNextWorkflowStep() {
+  if (!activeWorkflow) return
+
+  // User stopped → don't queue the next step. The terminal event from the
+  // killed script (or absence of one if it never started) handles cleanup.
+  if (activeWorkflow.aborted) {
+    activeWorkflow.reply('script-event', {
+      event: 'workflow-stopped',
+      reason: 'user',
+      atIndex: activeWorkflow.idx,
+      atScript: (activeWorkflow.steps[activeWorkflow.idx] || {}).script || null
+    })
+    activeWorkflow = null
+    return
+  }
+
+  if (activeWorkflow.idx >= activeWorkflow.steps.length) {
+    activeWorkflow.reply('script-event', {
+      event: 'workflow-done',
+      name: activeWorkflow.name
+    })
+    activeWorkflow = null
+    return
+  }
+
+  const step = activeWorkflow.steps[activeWorkflow.idx]
+  activeWorkflow.reply('script-event', {
+    event: 'workflow-step-start',
+    index: activeWorkflow.idx,
+    total: activeWorkflow.steps.length,
+    script: step.script
+  })
+
+  // Wrap the renderer reply so we can react to script terminal events
+  // (advance the workflow on success, abort on failure) while still
+  // forwarding every event to the renderer for normal display. The user
+  // sees the full per-step log AND the workflow-level events.
+  const wrapped = (ch, msg) => {
+    if (!activeWorkflow) return
+    activeWorkflow.reply(ch, msg)
+    if (ch !== 'script-event' || !msg) return
+
+    if (msg.event === 'script-done') {
+      // Step succeeded — move to the next one. Tiny pause so the renderer
+      // log can flush its tail line and the user sees the step boundary.
+      activeWorkflow.idx += 1
+      setTimeout(runNextWorkflowStep, 250)
+      return
+    }
+
+    if (msg.event === 'error' || msg.event === 'failsafe' || msg.event === 'stopped') {
+      // Halt the workflow. The underlying error message has already been
+      // forwarded above; we just add the workflow-level "we're stopping"
+      // event so the UI can update its progress indicator.
+      activeWorkflow.reply('script-event', {
+        event: 'workflow-stopped',
+        reason: activeWorkflow.aborted ? 'user' : msg.event,
+        atIndex: activeWorkflow.idx,
+        atScript: step.script
+      })
+      activeWorkflow = null
+    }
+  }
+
+  startScriptProc(step.script, null, wrapped, activeWorkflow.pythonBin)
+}
+
+ipcMain.on('run-workflow', async (event, payload) => {
+  const reply = (ch, msg) => event.reply(ch, msg)
+  if (!assertActivatedOrReply(reply)) return
+  let py
+  try { py = await ensurePythonEnv() }
+  catch (e) {
+    reply('script-event', { event: 'error', message: 'Python setup failed: ' + e.message })
+    return
+  }
+  const id = payload && payload.id
+  const wf = loadWorkflows().find(w => w.id === id)
+  if (!wf) {
+    reply('script-event', { event: 'error', message: 'Workflow not found.' })
+    return
+  }
+  startWorkflow(wf, reply, py)
 })

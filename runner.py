@@ -482,6 +482,91 @@ def run_action(action, variables):
             variables[var_name] = response.get('value', '')
             # Intentionally do NOT log the value for secure_input.
 
+    elif kind == 'manual_input':
+        # Pause the run, ask the user for a value, and (by default) type
+        # that value into whatever field has focus. Useful when most of a
+        # script is fixed but ONE value varies per run — e.g. a 2FA code
+        # from an email or a transaction reference.
+        #
+        # Built on top of the existing prompt event channel so the hub's
+        # prompt modal renders this with no UI changes. The action ALWAYS
+        # emits kind='input' (or 'secure_input' if the user marked it
+        # sensitive) — this is what shows the input field instead of just
+        # a confirm/cancel pair.
+        #
+        # Focus handoff: opening the modal pulls focus to WillettBot. After
+        # the user submits, we MUST re-focus the app the script was working
+        # in — otherwise typewrite() / pressEnter would land in WillettBot
+        # (or in nothing, if the modal already closed) instead of in the
+        # user's actual target. We snapshot the frontmost app/window right
+        # before emitting the prompt and restore it before typing.
+        prev_app = None
+        prev_title = None
+        try:
+            prev_app   = platform.get_frontmost_app()
+            prev_title = platform.get_frontmost_window_title()
+        except Exception:
+            pass
+
+        prompt_id = str(uuid.uuid4())
+        message = substitute(action.get('message', '') or 'Enter value:', variables)
+        secure  = bool(action.get('secure', False))
+        emit({
+            'event': 'prompt',
+            'id': prompt_id,
+            'message': message,
+            'kind': 'secure_input' if secure else 'input',
+            # storeAs is informational here — we read it ourselves below.
+            'storeAs': action.get('storeAs') or None,
+            'confirmLabel': 'Continue',
+            'cancelLabel':  'Cancel',
+        })
+        response = wait_for_response(prompt_id)
+        if response is None:
+            raise TimeoutError('Manual step timed out after 10 minutes.')
+        if response.get('cancelled'):
+            raise RuntimeError('User cancelled at manual step: ' + message)
+        value = response.get('value', '')
+        # Optional: store the value as a script variable so later steps can
+        # reuse it via {{var}} (e.g. paste the same code into two fields).
+        var_name = action.get('storeAs')
+        if var_name:
+            variables[var_name] = value
+
+        # Restore focus to the previously-frontmost app before typing or
+        # pressing Enter. Skip if WillettBot itself was frontmost (in dev
+        # this shows up as "Electron"; in packaged builds as "WillettBot")
+        # — refocusing ourselves wouldn't help, the keys would still land
+        # in our window. The error log is best-effort: if the platform
+        # backend hiccups, we still attempt the typewrite — it's better
+        # than aborting an otherwise-valid run.
+        def _is_self_app(n):
+            if not n: return False
+            ln = n.lower()
+            return 'willettbot' in ln or 'electron' in ln
+        if prev_app and not _is_self_app(prev_app):
+            try:
+                platform.activate_app(prev_app)
+                platform.wait_until_frontmost(prev_app, timeout=1.5)
+                if prev_title:
+                    platform.raise_window_by_title(prev_app, prev_title)
+                # Settle so the activation animation completes before
+                # keystrokes start firing — same 0.18s used elsewhere.
+                time.sleep(0.18)
+            except Exception as e:
+                emit({'event': 'log',
+                      'message': 'Warning: could not refocus ' + prev_app +
+                                 ' before continuing: ' + str(e)})
+
+        # Default behavior: type the value into the focused field. Toggleable
+        # via `type: false` for cases where the user just wants to capture a
+        # value into a variable without typing it anywhere immediately.
+        should_type = action.get('type', True)
+        if should_type and value:
+            pyautogui.typewrite(value, interval=float(action.get('interval', 0.02)))
+        if action.get('pressEnter'):
+            pyautogui.press('enter')
+
     else:
         raise ValueError('Unknown action: ' + str(kind))
 
