@@ -531,15 +531,26 @@ app.whenReady().then(() => {
 
   // Periodic license re-check while the app is open. Without this, a user
   // who cancels their subscription on the website at 9am might keep using
-  // the desktop app until the 24h cache window elapses. 30 minutes is a
-  // reasonable balance — short enough that cancellations propagate within
-  // a session, long enough that we're not hammering the server. The
-  // gate-on-action path (run-script / record-start / run-workflow) also
-  // refreshes synchronously, so this interval mostly catches the case of
-  // an idle-but-open app.
+  // the desktop app until the 24h cache window elapses. 5 minutes is short
+  // enough that cancellations propagate within a session even for users
+  // who never trigger a gated action, but well within Stripe / Vercel rate
+  // limits. The gate-on-action path (run-script / record-start /
+  // run-workflow) refreshes synchronously, so this is the catch-all for
+  // idle-but-open apps.
   setInterval(() => {
     refreshLicenseAndNotify().catch(() => {})
-  }, 30 * 60 * 1000)
+  }, 5 * 60 * 1000)
+
+  // Refresh when the user brings the WillettBot window back to the front.
+  // This is the critical "I just canceled my sub on the website and tabbed
+  // back to the desktop" path — without it the app would happily keep
+  // working until the next polled refresh or gated action. Refocus is
+  // exactly when we want the app to look authoritative about state.
+  if (mainWin && !mainWin.isDestroyed()) {
+    mainWin.on('focus', () => {
+      refreshLicenseAndNotify().catch(() => {})
+    })
+  }
 })
 
 // Never leave a runaway clicker or script behind when the app quits.

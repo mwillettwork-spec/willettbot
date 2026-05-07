@@ -1912,10 +1912,9 @@
   async function bootActivationGate() {
     if (!ipcRenderer) {
       // No Electron (e.g. opening hub.html in a browser for styling work) —
-      // hide every gate so the designer can see the rest of the app.
-      _hideAllGates()
-      var splash = document.getElementById('view-splash')
-      if (splash) splash.classList.add('active')
+      // jump straight to the splash so the designer sees the post-activation
+      // experience.
+      showView('view-splash')
       return
     }
     try {
@@ -1923,8 +1922,20 @@
       if (r && r.activated) {
         _licenseSource = r.source || null
         _activationInfo = r.info || (r.payload || null)
-        _hideAllGates()
-        document.getElementById('view-splash').classList.add('active')
+        // Live-flip case: license was inactive and just became active again
+        // (user resubscribed and clicked Refresh). If they're already on the
+        // hub or builder, leave them there — going back through splash would
+        // be a jarring detour. On a fresh launch, view-hub isn't .active yet
+        // so we fall through to splash, which is the correct welcome flow.
+        var hubAlreadyActive =
+          document.getElementById('view-hub').classList.contains('active') ||
+          document.getElementById('view-builder').classList.contains('active') ||
+          document.getElementById('view-clicker').classList.contains('active')
+        if (hubAlreadyActive) {
+          _hideAllGates()
+        } else {
+          showView('view-splash')
+        }
         renderActivationStatusBar(r)
         return
       }
@@ -2012,8 +2023,20 @@
       if (r && r.ok && r.state && r.state.activated) {
         _licenseSource = 'account'
         _activationInfo = null
-        _hideAllGates()
-        document.getElementById('view-splash').classList.add('active')
+        // If the user was already in a real view (hub / builder / clicker)
+        // when their sub expired, return them there — bouncing them back
+        // through splash would be disorienting. If this is the first
+        // time they're getting past the gate (e.g. sub-ended on cold
+        // launch), show splash so they get the normal welcome flow.
+        var hubAlreadyActive =
+          document.getElementById('view-hub').classList.contains('active') ||
+          document.getElementById('view-builder').classList.contains('active') ||
+          document.getElementById('view-clicker').classList.contains('active')
+        if (hubAlreadyActive) {
+          _hideAllGates()
+        } else {
+          showView('view-splash')
+        }
         renderActivationStatusBar({
           activated: true,
           source: 'account',
