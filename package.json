@@ -1,6 +1,6 @@
 {
   "name": "willettbot",
-  "version": "1.0.28",
+  "version": "1.0.29",
   "description": "Desktop automation for non-technical users — record, edit, and replay macros.",
   "main": "main.js",
   "author": {
@@ -55,8 +55,6 @@
       "platform_mac.py",
       "platform_win.py",
       "platform_linux.py",
-      "licensing/public_key.pem",
-      "licensing/keygen.js",
       "PRIVACY.md",
       "TERMS.md",
       "NOTICES.md",
@@ -64,10 +62,10 @@
       "package.json",
       "!**/__pycache__/**",
       "!**/*.pyc",
-      "!licensing/private_key.pem",
-      "!activation.json",
       "!favorites.json",
       "!schedules.json",
+      "!workflows.json",
+      "!account.json",
       "!scripts/**",
       "!dist-app/**"
     ],

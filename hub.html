@@ -1273,30 +1273,6 @@
         recording and replay features.
       </div>
 
-      <!-- Legacy offline-key path. Hidden by default; expandable for beta
-           testers who already have a key. We'll remove this section after
-           the migration window closes. -->
-      <details id="act-legacy-key" style="margin-top:22px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.08)">
-        <summary style="cursor:pointer;font-size:12px;color:var(--text3);user-select:none">
-          Have an existing activation key?
-        </summary>
-        <div style="margin-top:14px">
-          <label class="act-label" for="act-key">Activation key</label>
-          <textarea id="act-key" class="act-input" spellcheck="false" autocapitalize="off"
-                    autocomplete="off" autocorrect="off"
-                    placeholder="willettbot-..."></textarea>
-          <div class="act-row">
-            <button class="act-btn" id="act-submit" onclick="submitActivation()">Activate key</button>
-            <div class="act-msg" id="act-msg" role="status" aria-live="polite"></div>
-          </div>
-          <div class="act-hint">
-            Keys are validated locally — no internet required. We're moving
-            beta testers to email accounts soon; this option will disappear
-            in a future build.
-          </div>
-        </div>
-      </details>
-
       <!-- Legal pre-activation agreement. Clicking either link opens the
            full document in a modal — users can read both before activating. -->
       <div style="margin-top:18px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.08);font-size:11px;color:var(--text3);text-align:center;line-height:1.5">
@@ -1899,15 +1875,14 @@
   }
 
   // ── ACTIVATION ──
-  // On cold launch we ask main.js whether either auth path is satisfied:
-  // an offline key (legacy) or a signed-in account with cached "active"
-  // license. If yes, skip straight to the splash. If no, leave the
-  // activation view active.
+  // On cold launch we ask main.js whether the signed-in account has a
+  // cached "active" license. If yes, skip straight to the splash. If the
+  // user is signed in but inactive, we route them to the subscription-
+  // ended view. If they have no token at all, the sign-in gate stays up.
   //
-  // submitSignIn()    → primary path: opens browser, waits for token.
-  // submitActivation() → legacy path: pastes an offline key.
+  // submitSignIn() drives the browser-handoff sign-in flow.
   var _activationInfo = null
-  var _licenseSource  = null   // 'key' | 'account' | null
+  var _licenseSource  = null   // 'account' | null
 
   async function bootActivationGate() {
     if (!ipcRenderer) {
@@ -1969,17 +1944,9 @@
     if (ended) ended.classList.remove('active')
   }
 
-  function _showActivationGate(r) {
+  function _showActivationGate(/* r */) {
     _hideAllGates()
     document.getElementById('view-activation').classList.add('active')
-    // Existing legacy hint: surface "your old key expired" so beta testers
-    // who haven't migrated to email don't think the app is broken.
-    var keyMsg = document.getElementById('act-msg')
-    var ks = r && r.keyState
-    if (keyMsg && ks && ks.expired) {
-      keyMsg.textContent = 'Your previous key expired — sign in with email or paste a new key.'
-      keyMsg.className = 'act-msg err'
-    }
   }
 
   async function _showSubscriptionEndedView() {
@@ -2130,52 +2097,8 @@
     }
   }
 
-  async function submitActivation() {
-    var input = document.getElementById('act-key')
-    var msg   = document.getElementById('act-msg')
-    var btn   = document.getElementById('act-submit')
-    if (!input) return
-    var key = (input.value || '').trim()
-    if (!key) {
-      msg.textContent = 'Paste your activation key first.'
-      msg.className = 'act-msg err'
-      return
-    }
-    if (!ipcRenderer) {
-      msg.textContent = 'Activation only works inside the app.'
-      msg.className = 'act-msg err'
-      return
-    }
-    btn.disabled = true
-    msg.textContent = 'Checking…'
-    msg.className = 'act-msg'
-    try {
-      var r = await ipcRenderer.invoke('activate-key', { key: key })
-      if (r && r.ok) {
-        _activationInfo = r.info
-        msg.textContent = '✓ Activated — welcome.'
-        msg.className = 'act-msg ok'
-        renderActivationStatusBar({ activated: true, info: r.info })
-        // Tiny pause so the user sees the success state, then transition.
-        setTimeout(function() {
-          document.getElementById('view-activation').classList.remove('active')
-          document.getElementById('view-splash').classList.add('active')
-        }, 500)
-      } else {
-        msg.textContent = (r && r.error) || 'Activation failed.'
-        msg.className = 'act-msg err'
-      }
-    } catch (e) {
-      msg.textContent = 'Activation error: ' + e.message
-      msg.className = 'act-msg err'
-    } finally {
-      btn.disabled = false
-    }
-  }
-
-  // Persistent top-right badge. For account-source state shows "personal ·
-  // foo@bar.com"; for key-source state shows "beta · 14d left" exactly as
-  // before. Sign-out clears the path that's currently active.
+  // Persistent top-right badge. Shows "personal · foo@bar.com" for the
+  // signed-in user. Sign-out clears it.
   function renderActivationStatusBar(state) {
     var existing = document.getElementById('act-status-bar')
     if (existing) existing.remove()
@@ -2185,22 +2108,11 @@
     bar.id = 'act-status-bar'
     bar.className = 'act-status-bar'
 
-    var source = state.source || (state.info ? 'key' : 'account')
-    var labelText = ''
-    if (source === 'key' && state.info) {
-      var tier = state.info.tier || 'beta'
-      var exp  = state.info.expires ? new Date(state.info.expires) : null
-      var left = exp ? Math.max(0, Math.round((exp.getTime() - Date.now()) / 86400000)) : null
-      labelText = tier + (left !== null ? ' · ' + left + 'd left' : '')
-    } else if (source === 'account') {
-      var p = state.payload || {}
-      var planName = p.tier || p.plan || 'personal'
-      var emailLabel = p.email || ''
-      labelText = planName + (emailLabel ? ' · ' + emailLabel : '')
-    } else {
-      // Nothing to show — bail without rendering an empty pill.
-      return
-    }
+    var p = state.payload || {}
+    var planName = p.tier || p.plan || 'personal'
+    var emailLabel = p.email || ''
+    var labelText = planName + (emailLabel ? ' · ' + emailLabel : '')
+    if (!labelText) return  // nothing to show — bail without an empty pill
     bar.textContent = labelText
 
     var tourBtn = document.createElement('button')
@@ -2213,29 +2125,17 @@
 
     var btn = document.createElement('button')
     btn.textContent = 'sign out'
-    if (source === 'account') {
-      btn.title = 'Sign out of your WillettBot account on this machine'
-      btn.onclick = async function() {
-        if (!ipcRenderer) return
-        if (!confirm('Sign out of WillettBot? You\'ll need to sign in again with your email.')) return
-        try { await ipcRenderer.invoke('account-sign-out') } catch (e) {}
-        location.reload()
-      }
-    } else {
-      btn.title = 'Remove activation from this machine'
-      btn.onclick = async function() {
-        if (!ipcRenderer) return
-        if (!confirm('Sign out? You\'ll need to paste your key again.')) return
-        try { await ipcRenderer.invoke('deactivate') } catch (e) {}
-        location.reload()
-      }
+    btn.title = 'Sign out of your WillettBot account on this machine'
+    btn.onclick = async function() {
+      if (!ipcRenderer) return
+      if (!confirm('Sign out of WillettBot? You\'ll need to sign in again with your email.')) return
+      try { await ipcRenderer.invoke('account-sign-out') } catch (e) {}
+      location.reload()
     }
     bar.appendChild(btn)
     document.body.appendChild(bar)
   }
 
-  // Wire Enter-to-submit on the textarea (Cmd/Ctrl+Enter), so beta users
-  // can activate without reaching for the mouse.
   // Platform info (filled in on DOMContentLoaded). Cached so UI text branches
   // don't have to await the IPC call every time. Defaults assume Mac so old
   // copy still renders correctly if the get-platform handler ever fails.
@@ -2291,14 +2191,6 @@
     // Resolve platform FIRST so any subsequent UI booting (activation gate,
     // permission banner, recorder warnings) can branch on _platform.isMac.
     await loadPlatformInfo()
-    var ta = document.getElementById('act-key')
-    if (ta) {
-      ta.addEventListener('keydown', function(e) {
-        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-          e.preventDefault(); submitActivation()
-        }
-      })
-    }
     bootActivationGate()
     bootPyEnvBanner()
     // Intentionally NOT running a proactive permission check on startup:

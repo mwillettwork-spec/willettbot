@@ -1,9 +1,11 @@
 // ──────────────────────────────────────────────────────────────────────────────
 // account.js — email/account-based licensing for the desktop app.
 //
-// Replaces the old offline Ed25519-signed license-key flow (licensing/keygen.js)
-// with a server-checked subscription model. Both flows are kept in main.js for
-// a transition period; this module only handles the new path.
+// Replaces the old offline Ed25519-signed license-key flow (removed in
+// 1.0.28) with a server-checked subscription model. The desktop signs the
+// user in via the browser, receives a device token, and uses that token
+// to call /api/license on willettbot.com. The result is cached on disk so
+// brief offline blips don't lock anyone out.
 //
 // Flow on first launch with no token stored:
 //

@@ -329,110 +329,32 @@ function pruneFavorites(list) {
   })
 }
 
-// ── ACTIVATION / LICENSE ───────────────────────────────────────────────────
-// Ed25519-signed keys minted by licensing/keygen.js. The public key is bundled
-// with the app; there's no network call — the whole thing validates locally.
-// Activation state lives in the per-user Electron userData directory so it
-// survives across app sessions but can't accidentally land in the repo.
-const { verifyKey: verifyLicenseKey, PREFIX: LICENSE_PREFIX } =
-  require('./licensing/keygen.js')
-
-// Email/account-based licensing path. Lives alongside the old offline-key
-// path during the migration: existing beta testers keep their keys working,
-// new users sign in with email and the server tells us if they're paid.
+// ── ACCOUNT / LICENSE ──────────────────────────────────────────────────────
+// Email-account-based licensing. The desktop signs the user in via the
+// browser-handoff flow (see account.js), receives a device token, and uses
+// that token to call /api/license on willettbot.com. The server returns
+// whether the user has an active subscription (or comp grant). Result is
+// cached on disk so a brief offline blip doesn't lock anyone out.
+//
+// The original Ed25519 offline-key flow that lived here through 1.0.27 was
+// removed in 1.0.28: every beta tester was migrated to a Clerk account +
+// comp_beta subscription via scripts/migrate-beta-testers.js, and from
+// here on out everyone authenticates with email.
 const account = require('./account')
 
-const PUB_KEY_PATH = path.join(__dirname, 'licensing', 'public_key.pem')
-let PUB_KEY_PEM = null
-try {
-  PUB_KEY_PEM = fs.readFileSync(PUB_KEY_PATH, 'utf8')
-} catch (e) {
-  console.error('[willettbot] public key missing at', PUB_KEY_PATH,
-                '— activation will always fail until you run',
-                '`node licensing/keygen.js init`.')
-}
-
-// Lazily resolved because app.getPath('userData') isn't available until
-// whenReady. We cache after first call.
-let _activationFilePath = null
-function activationFilePath() {
-  if (_activationFilePath) return _activationFilePath
-  try {
-    _activationFilePath = path.join(app.getPath('userData'), 'activation.json')
-  } catch (e) {
-    // Fallback for off-Electron test harnesses — use DATA_DIR which also
-    // honors WILLETTBOT_DATA_DIR so tests can point at a scratch folder.
-    _activationFilePath = path.join(DATA_DIR, 'activation.json')
-  }
-  return _activationFilePath
-}
-
-function loadActivation() {
-  try {
-    const p = activationFilePath()
-    if (!fs.existsSync(p)) return null
-    const raw = JSON.parse(fs.readFileSync(p, 'utf8'))
-    if (!raw || typeof raw !== 'object' || typeof raw.key !== 'string') return null
-    return raw
-  } catch (e) {
-    console.error('[willettbot] activation load failed:', e)
-    return null
-  }
-}
-
-function saveActivation(record) {
-  try {
-    const p = activationFilePath()
-    fs.mkdirSync(path.dirname(p), { recursive: true })
-    fs.writeFileSync(p, JSON.stringify(record, null, 2), 'utf8')
-    return true
-  } catch (e) {
-    console.error('[willettbot] activation save failed:', e)
-    return false
-  }
-}
-
-// Quick read: is the stored key still valid right now?
-function currentActivationState() {
-  if (!PUB_KEY_PEM) {
-    return { activated: false, reason: 'no public key bundled' }
-  }
-  const rec = loadActivation()
-  if (!rec) return { activated: false }
-  const res = verifyLicenseKey(rec.key, PUB_KEY_PEM)
-  if (!res.ok) {
-    return { activated: false, reason: res.reason, expired: !!res.expired,
-             info: res.payload || null, key: rec.key }
-  }
-  return { activated: true, info: res.payload, key: rec.key,
-           activatedAt: rec.activatedAt || null }
-}
-
-// Combined gate. Returns the first auth path that says we're activated,
-// or a "not activated" verdict that distinguishes the cases for the UI.
-//
-//   source: 'key'     → grandfathered offline key still valid
-//   source: 'account' → signed-in user with a licensed subscription (cached)
-//   source: 'none'    → neither path resolved
-//
-// This is sync — both the key check and the cached account check are local
-// disk reads. The actual /api/license server poll happens out-of-band on
-// app launch and after sign-in (see refreshAccountLicenseInBackground).
+// Single source of truth for "is the user licensed". Sync — reads the
+// cached account verdict from disk. The actual /api/license server poll
+// happens out-of-band on app launch, after sign-in, on a 5-min interval,
+// and on every gated action (see refreshLicenseAndNotify below). The
+// `accountState` reason is preserved so the UI can differentiate
+// "never signed in" (show sign-in gate) from "signed in but inactive"
+// (show subscription-ended gate).
 function currentLicenseState() {
-  const keyState = currentActivationState()
-  if (keyState.activated) {
-    return { activated: true, source: 'key', info: keyState.info,
-             activatedAt: keyState.activatedAt }
-  }
   const accountState = account.getCachedLicenseState()
   if (accountState.activated) {
     return { activated: true, source: 'account', payload: accountState.payload }
   }
-  // Surface both reasons so the UI can give a sensible message: e.g. if the
-  // user used to have a key that expired AND they're not signed in, we want
-  // to lean toward "sign in" not "your key expired."
-  return { activated: false, source: 'none',
-           keyState, accountState }
+  return { activated: false, source: 'none', accountState }
 }
 
 // Fire-and-forget refresh that pings /api/license to update the cached
@@ -1171,16 +1093,11 @@ ipcMain.handle('legal-doc', async (event, which) => {
 })
 
 // ── ACTIVATION IPC ──
-// Hub calls check-activation on launch to decide whether to show the
-// activation screen or jump straight to the splash. activate-key is the
-// form-submit target; returns { ok, info | error }. Rejects bad keys
-// loudly but doesn't persist them so the user can retry without leaving
-// a broken file behind.
-//
-// We return the combined state (key OR account) so the hub can transition
-// to the splash regardless of which auth path the user used. The keyState/
-// accountState breakdown is included so the hub can give a precise message
-// when neither path is active.
+// Hub calls check-activation on launch to decide whether to jump to the
+// splash (activated), the sign-in gate (no token), or the
+// subscription-ended view (token but inactive). The accountState reason
+// distinguishes those last two cases so the renderer can pick the right
+// gate without hitting the network again.
 ipcMain.handle('check-activation', async () => {
   try {
     const st = currentLicenseState()
@@ -1191,9 +1108,9 @@ ipcMain.handle('check-activation', async () => {
 })
 
 // ── ACCOUNT IPC (email/sign-in flow) ──
-// New world. The hub uses these on the activation screen's "Sign in"
-// button and afterward for the status bar. Old activate-key path stays
-// available below so beta keys keep working through the migration.
+// The hub uses these on the activation screen's "Sign in" button and
+// afterward for the status bar. Email/account is the only auth path —
+// the legacy offline-key flow was removed in 1.0.28.
 
 // Run the browser-handoff sign-in. Resolves with { ok, summary } once the
 // user finishes signing in in their browser, or { ok:false, error } on
@@ -1243,53 +1160,6 @@ ipcMain.handle('account-summary', async () => {
 ipcMain.handle('account-sign-out', async () => {
   try {
     account.signOut()
-    return { ok: true }
-  } catch (e) {
-    return { ok: false, error: e.message }
-  }
-})
-
-ipcMain.handle('activate-key', async (event, payload) => {
-  try {
-    if (!PUB_KEY_PEM) {
-      return { ok: false, error: 'app is missing licensing/public_key.pem — contact support.' }
-    }
-    const key = (payload && typeof payload.key === 'string') ? payload.key.trim() : ''
-    if (!key) return { ok: false, error: 'Paste your activation key to continue.' }
-    if (!key.startsWith(LICENSE_PREFIX)) {
-      return { ok: false,
-               error: 'That doesn\'t look like a WillettBot key — keys start with "' + LICENSE_PREFIX + '".' }
-    }
-    const res = verifyLicenseKey(key, PUB_KEY_PEM)
-    if (!res.ok) {
-      // Friendly-up the common cases.
-      let msg = 'Key rejected: ' + (res.reason || 'unknown')
-      if (res.expired) msg = 'This key expired on ' + (res.payload && res.payload.expires) + '.'
-      else if (res.reason === 'signature does not match') msg = 'This key isn\'t valid for this build of WillettBot.'
-      return { ok: false, error: msg, expired: !!res.expired, info: res.payload || null }
-    }
-    // Persist. Store the raw key + activatedAt so we can display when it
-    // was first entered and re-verify against future public-key rotations.
-    const record = {
-      key,
-      activatedAt: new Date().toISOString(),
-      email: res.payload.email,
-      tier:  res.payload.tier,
-      id:    res.payload.id,
-    }
-    saveActivation(record)
-    return { ok: true, info: res.payload, activatedAt: record.activatedAt, key }
-  } catch (e) {
-    return { ok: false, error: e.message }
-  }
-})
-
-// Explicit de-activation. Useful for "switch accounts" during beta and
-// keeps us out of weird states where a key gets invalidated upstream.
-ipcMain.handle('deactivate', async () => {
-  try {
-    const p = activationFilePath()
-    if (fs.existsSync(p)) fs.unlinkSync(p)
     return { ok: true }
   } catch (e) {
     return { ok: false, error: e.message }
