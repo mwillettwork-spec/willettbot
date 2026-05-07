@@ -1,6 +1,6 @@
 {
   "name": "willettbot",
-  "version": "1.0.29",
+  "version": "1.0.30",
   "description": "Desktop automation for non-technical users — record, edit, and replay macros.",
   "main": "main.js",
   "author": {
@@ -22,6 +22,7 @@
     "pack": "npm run clean-dist && npm run strip-xattrs && npm run prepare-python && electron-builder --dir"
   },
   "dependencies": {
+    "@sentry/electron": "^7.13.0",
     "electron-updater": "^6.3.9"
   },
   "devDependencies": {

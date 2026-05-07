@@ -1864,6 +1864,13 @@
 </div>
 
 <script>
+  // ── SENTRY (renderer) — connects to the main process init, no extra config
+  // needed. Wrapped so a missing dep doesn't block the renderer at dev time.
+  try {
+    const SentryElectron = require('@sentry/electron/renderer')
+    SentryElectron.init({})
+  } catch (e) { /* dev mode ok */ }
+
   // Try to load electron IPC — works inside Electron, gracefully skipped in browser
   var ipcRenderer = null
   try { ipcRenderer = require('electron').ipcRenderer } catch(e) {}

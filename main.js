@@ -8,6 +8,25 @@ const { exec, spawn } = require('child_process')
 const fs = require('fs')
 const os = require('os')
 
+// ── SENTRY ERROR REPORTING ──────────────────────────────────────────────────
+// Captures uncaught exceptions, unhandled promise rejections, and native
+// Chromium crashes from the main + renderer processes. Wrapped in try so a
+// missing dep in dev (before npm install) doesn't block launch.
+let SentryElectron = null
+try {
+  SentryElectron = require('@sentry/electron/main')
+  SentryElectron.init({
+    dsn: 'https://1d373cf8f37f92f845cdfd22c82305ad@o4511350089580544.ingest.us.sentry.io/4511350096723968',
+    release: `willettbot@${require('./package.json').version}`,
+    environment: app.isPackaged ? 'production' : 'development',
+    tracesSampleRate: 0,
+    sendDefaultPii: false,
+    integrations: (defaults) => defaults.filter(i => i.name !== 'Replay'),
+  })
+} catch (e) {
+  console.log('[sentry] not installed — dev mode ok')
+}
+
 // electron-updater = check GitHub Releases for new DMGs on launch, download
 // them in the background, and prompt the user to restart. Wrapped in a
 // try/require so `npm start` in dev still works before the dep is installed.
