@@ -380,8 +380,10 @@
        Gate screen shown at first launch (and on every launch until a valid
        key is pasted). Same visual family as the splash — accent gradient,
        centered hero — but with a key-input form instead of a wordmark. */
-    #view-activation.active { display: flex; }
-    #view-activation {
+    #view-activation.active,
+    #view-subscription-ended.active { display: flex; }
+    #view-activation,
+    #view-subscription-ended {
       position: fixed;
       inset: 0;
       flex-direction: column;
@@ -1306,12 +1308,56 @@
     </div>
   </div>
 
+  <!-- ── SUBSCRIPTION-ENDED VIEW ──
+       Shown when the user IS signed in (we have a device token) but their
+       license check came back inactive — usually because they canceled the
+       subscription or a renewal payment failed. Distinct from the
+       view-activation gate above so we can speak to them as a former
+       customer rather than a brand-new visitor: their email is shown,
+       they get a Manage Subscription button that opens the dashboard, and
+       a Sign Out option if they want to switch accounts. -->
+  <div id="view-subscription-ended" class="view">
+    <div class="act-card">
+      <h2 class="act-title">Your subscription has ended.</h2>
+      <p class="act-sub">
+        We've signed you in but couldn't verify an active subscription, so
+        recording and scripts are paused. Resubscribe or update your payment
+        method to pick up exactly where you left off — your saved scripts,
+        favorites, and workflows are untouched.
+      </p>
+
+      <div class="act-row" style="margin-top:6px">
+        <button class="act-btn" id="act-manage-btn" onclick="openDashboardManage()">Manage subscription</button>
+        <div class="act-msg" id="act-manage-msg" role="status" aria-live="polite"></div>
+      </div>
+
+      <div class="act-hint">
+        Clicking opens your default browser to willettbot.com, where you can
+        resubscribe, change plan, or update your card. Once you're done, come
+        back and click <em>Refresh</em> below.
+      </div>
+
+      <div class="act-row" style="margin-top:14px">
+        <button class="act-btn" id="act-refresh-btn" onclick="refreshSubscriptionAfterManage()" style="background:transparent;border:1px solid var(--border)">Refresh</button>
+      </div>
+
+      <!-- Identity + sign-out. Email is the same identity they manage on
+           the dashboard, so showing it here helps them confirm they're
+           managing the right account before they click through. -->
+      <div id="act-ended-identity" style="margin-top:24px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.08);font-size:12px;color:var(--text3);line-height:1.6">
+        <span id="act-ended-email-label">Signed in as <strong id="act-ended-email">—</strong></span>
+        <span style="margin:0 6px;color:rgba(255,255,255,0.15)">·</span>
+        <a href="#" onclick="event.preventDefault(); signOutFromEndedView()" style="color:var(--accent);text-decoration:underline">Sign out</a>
+      </div>
+    </div>
+  </div>
+
   <!-- ── SPLASH VIEW ──
        Full-viewport hero. Shown after activation on every fresh launch; user
        clicks Continue to enter the hub. -->
   <div id="view-splash" class="view">
     <h1 class="splash-wordmark">willettbot</h1>
-    <p class="splash-tagline">When there's a Willett, there's a way.</p>
+    <p class="splash-tagline">Where there's a Willett, there's a way.</p>
     <button class="splash-continue" onclick="showView('view-hub')">Continue to the hub</button>
   </div>
 
@@ -1866,9 +1912,8 @@
   async function bootActivationGate() {
     if (!ipcRenderer) {
       // No Electron (e.g. opening hub.html in a browser for styling work) —
-      // hide the gate so the designer can see the rest of the app.
-      var gate = document.getElementById('view-activation')
-      if (gate) gate.classList.remove('active')
+      // hide every gate so the designer can see the rest of the app.
+      _hideAllGates()
       var splash = document.getElementById('view-splash')
       if (splash) splash.classList.add('active')
       return
@@ -1878,23 +1923,140 @@
       if (r && r.activated) {
         _licenseSource = r.source || null
         _activationInfo = r.info || (r.payload || null)
-        document.getElementById('view-activation').classList.remove('active')
+        _hideAllGates()
         document.getElementById('view-splash').classList.add('active')
         renderActivationStatusBar(r)
+        return
+      }
+      // Not activated. Two distinct UX paths from here:
+      //   - User has NO device token (never signed in, or signed out, or
+      //     token was rejected) → show the sign-in gate.
+      //   - User HAS a device token but the server says inactive (sub
+      //     canceled, payment failed, etc.) → show the subscription-ended
+      //     gate, which speaks to them as a returning customer and surfaces
+      //     a Manage Subscription button instead of the sign-in flow.
+      var accountReason = (r && r.accountState && r.accountState.reason) || 'no-account'
+      var hasToken = accountReason !== 'no-account'
+      if (hasToken) {
+        await _showSubscriptionEndedView()
       } else {
-        // Show a hint if the user used to have a valid key that expired.
-        // Silent for the clean first-launch case.
-        var keyMsg = document.getElementById('act-msg')
-        var ks = r && r.keyState
-        if (keyMsg && ks && ks.expired) {
-          keyMsg.textContent = 'Your previous key expired — sign in with email or paste a new key.'
-          keyMsg.className = 'act-msg err'
-        }
+        _showActivationGate(r)
       }
     } catch (e) {
       var m = document.getElementById('act-signin-msg')
       if (m) { m.textContent = 'Activation check failed: ' + e.message; m.className = 'act-msg err' }
     }
+  }
+
+  // Hide any gate views that might be active. The hub / builder / clicker
+  // views are .view-class and follow their own visibility rules; we only
+  // touch the two fixed-position gate overlays here.
+  function _hideAllGates() {
+    var act = document.getElementById('view-activation')
+    if (act) act.classList.remove('active')
+    var ended = document.getElementById('view-subscription-ended')
+    if (ended) ended.classList.remove('active')
+  }
+
+  function _showActivationGate(r) {
+    _hideAllGates()
+    document.getElementById('view-activation').classList.add('active')
+    // Existing legacy hint: surface "your old key expired" so beta testers
+    // who haven't migrated to email don't think the app is broken.
+    var keyMsg = document.getElementById('act-msg')
+    var ks = r && r.keyState
+    if (keyMsg && ks && ks.expired) {
+      keyMsg.textContent = 'Your previous key expired — sign in with email or paste a new key.'
+      keyMsg.className = 'act-msg err'
+    }
+  }
+
+  async function _showSubscriptionEndedView() {
+    _hideAllGates()
+    document.getElementById('view-subscription-ended').classList.add('active')
+    // Populate the user's email so they know which account they're managing
+    // before they click through to the dashboard. Best-effort — if Clerk is
+    // unreachable or the cache is empty we just leave the placeholder.
+    try {
+      var s = await ipcRenderer.invoke('account-summary')
+      var email = (s && s.ok && s.summary) ? s.summary.email : null
+      var el = document.getElementById('act-ended-email')
+      if (el) el.textContent = email || '—'
+      var lbl = document.getElementById('act-ended-email-label')
+      if (lbl && !email) lbl.style.display = 'none'
+    } catch (e) { /* non-fatal */ }
+  }
+
+  // Open willettbot.com/dashboard in the user's default browser. They sign
+  // in with the same email they used for the desktop, click Subscribe (or
+  // open Stripe's Customer Portal via Manage Subscription), then come back
+  // here and click Refresh. Re-uses the existing open-external-url IPC the
+  // hub already sets up for footer links.
+  function openDashboardManage() {
+    var url = 'https://www.willettbot.com/dashboard'
+    if (ipcRenderer) ipcRenderer.send('open-external-url', url)
+    var msg = document.getElementById('act-manage-msg')
+    if (msg) {
+      msg.textContent = 'Opened in your browser. After subscribing, come back and click Refresh.'
+      msg.className = 'act-msg'
+    }
+  }
+
+  async function refreshSubscriptionAfterManage() {
+    if (!ipcRenderer) return
+    var btn = document.getElementById('act-refresh-btn')
+    var msg = document.getElementById('act-manage-msg')
+    if (btn) { btn.disabled = true; btn.textContent = 'Checking…' }
+    try {
+      var r = await ipcRenderer.invoke('account-refresh-license')
+      if (r && r.ok && r.state && r.state.activated) {
+        _licenseSource = 'account'
+        _activationInfo = null
+        _hideAllGates()
+        document.getElementById('view-splash').classList.add('active')
+        renderActivationStatusBar({
+          activated: true,
+          source: 'account',
+          payload: r.state.payload || (r.summary || null),
+        })
+      } else {
+        if (msg) {
+          msg.textContent = 'Still no active subscription on this account. Try again in a moment, or sign out to switch accounts.'
+          msg.className = 'act-msg err'
+        }
+      }
+    } catch (e) {
+      if (msg) { msg.textContent = 'Refresh failed: ' + e.message; msg.className = 'act-msg err' }
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Refresh' }
+    }
+  }
+
+  // Sign out from the ended-sub view. Drops the device token and falls back
+  // to the regular sign-in gate so the user can sign in with a different
+  // account if they want.
+  async function signOutFromEndedView() {
+    if (!ipcRenderer) return
+    if (!confirm('Sign out of WillettBot? You\'ll need to sign in again to use the app.')) return
+    try {
+      await ipcRenderer.invoke('account-sign-out')
+      _hideAllGates()
+      document.getElementById('view-activation').classList.add('active')
+      var bar = document.getElementById('act-status-bar')
+      if (bar) bar.remove()
+    } catch (e) {
+      alert('Could not sign out: ' + e.message)
+    }
+  }
+
+  // Live re-render: main process emits 'license-state-changed' on every
+  // status flip (background poll, post-action refresh, etc.). We just
+  // re-run the gate logic so the user lands on the right view without a
+  // manual reload.
+  if (ipcRenderer) {
+    ipcRenderer.on('license-state-changed', function() {
+      bootActivationGate()
+    })
   }
 
   // Primary sign-in path. Triggers main.js to open the user's browser to

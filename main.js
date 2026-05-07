@@ -446,6 +446,57 @@ function refreshAccountLicenseInBackground() {
     .catch(err => console.error('[willettbot] license refresh failed:', err))
 }
 
+// ── Live license-state notifications ─────────────────────────────────────
+// Tracks the last-known status string so the periodic refresh + the
+// per-action gate can both notice state flips and tell the renderer.
+// The renderer listens on 'license-state-changed' to switch between the
+// hub and the new "subscription ended" view without a manual reload.
+let _lastKnownLicenseStatus = null
+
+function _statusFingerprint(state) {
+  if (!state) return 'unknown'
+  if (state.activated) return 'active'
+  return 'inactive:' + (state.reason || 'unknown')
+}
+
+function _summarizeLicenseForRenderer(state) {
+  return {
+    activated: !!state.activated,
+    reason: state.reason || null,
+    payload: state.payload || null,
+    error: state.error || null,
+  }
+}
+
+// Force a fresh /api/license check and, if the resolved status has changed
+// since the last check, emit 'license-state-changed' to the renderer so it
+// can switch views (e.g. mid-session cancellation → "Subscription ended").
+// Used both by the gate-on-action path and by the periodic interval below.
+async function refreshLicenseAndNotify() {
+  if (!account.loadAccount()) return
+  let state
+  try {
+    state = await account.getLicenseState({ forceRefresh: true })
+  } catch (err) {
+    // Swallow — offline grace handles continued operation.
+    return
+  }
+  const fp = _statusFingerprint(state)
+  if (fp !== _lastKnownLicenseStatus) {
+    _lastKnownLicenseStatus = fp
+    if (mainWin && !mainWin.isDestroyed() && mainWin.webContents) {
+      try {
+        mainWin.webContents.send(
+          'license-state-changed',
+          _summarizeLicenseForRenderer(state)
+        )
+      } catch (e) {
+        console.error('[willettbot] license-state-changed emit failed:', e)
+      }
+    }
+  }
+}
+
 // Track the main window so we can surface native dialogs & refocus it.
 let mainWin = null
 
@@ -477,6 +528,18 @@ app.whenReady().then(() => {
   // / new payments propagate within a launch instead of lingering up
   // to the cache TTL. No-op if the user isn't signed in via account.
   refreshAccountLicenseInBackground()
+
+  // Periodic license re-check while the app is open. Without this, a user
+  // who cancels their subscription on the website at 9am might keep using
+  // the desktop app until the 24h cache window elapses. 30 minutes is a
+  // reasonable balance — short enough that cancellations propagate within
+  // a session, long enough that we're not hammering the server. The
+  // gate-on-action path (run-script / record-start / run-workflow) also
+  // refreshes synchronously, so this interval mostly catches the case of
+  // an idle-but-open app.
+  setInterval(() => {
+    refreshLicenseAndNotify().catch(() => {})
+  }, 30 * 60 * 1000)
 })
 
 // Never leave a runaway clicker or script behind when the app quits.
@@ -1396,20 +1459,35 @@ function startScriptProc(filename, variables, reply, pythonBin) {
 // Activation gate for anything that actually automates the desktop.
 // The hub is expected to block these UIs behind the activation screen, but
 // we enforce in main too so a poked renderer can't sneak past.
-function assertActivatedOrReply(replyFn) {
+// Async gate: forces a fresh /api/license check before answering, so a
+// subscription that was canceled on the website 30 seconds ago will block
+// the very next run instead of waiting out the local 24h cache. Side-effect:
+// refreshLicenseAndNotify() emits 'license-state-changed' to the renderer
+// when the status flips, which is how the hub knows to switch from the
+// normal view to the "subscription ended" screen mid-session.
+//
+// Callers pass an optional `channel` so non-script-runner callers (the
+// recorder, in particular) can use 'record-event' for the error reply.
+async function assertActivatedOrReply(replyFn, channel = 'script-event') {
+  await refreshLicenseAndNotify()
   const st = currentLicenseState()
   if (st.activated) return true
-  replyFn('script-event', {
-    event: 'error',
-    message: 'WillettBot isn\'t activated. Sign in to your account to run scripts.'
-  })
+  // Differentiate "signed in but sub ended" from "never signed in" so the
+  // error message points at the right next step. The renderer also gets
+  // the matching license-state-changed event around the same time and
+  // switches to the appropriate view.
+  const isSignedIn = !!account.loadAccount()
+  const message = isSignedIn
+    ? 'Your subscription is no longer active. Open the dashboard to renew or update your payment method.'
+    : 'WillettBot isn\'t activated. Sign in to your account to run scripts.'
+  replyFn(channel, { event: 'error', message })
   return false
 }
 
 // ── SCRIPTS: start a script runner (triggered by the Run button) ──
 ipcMain.on('run-script', async (event, payload) => {
   const reply = (ch, msg) => event.reply(ch, msg)
-  if (!assertActivatedOrReply(reply)) return
+  if (!(await assertActivatedOrReply(reply))) return
   let py
   try { py = await ensurePythonEnv() }
   catch (e) {
@@ -1509,14 +1587,12 @@ ipcMain.handle('delete-script', async (event, filename) => {
 // actual save goes through `save-recorded-script` below so the user picks
 // the filename/description.
 ipcMain.on('record-start', async (event, opts) => {
-  // Activation gate: recording is an automation feature too.
-  if (!currentLicenseState().activated) {
-    event.reply('record-event', {
-      event: 'error',
-      message: 'WillettBot isn\'t activated — sign in to enable recording.'
-    })
-    return
-  }
+  // Activation gate: recording is an automation feature too. We use the
+  // same async helper as run-script / run-workflow so a fresh /api/license
+  // check happens here (catching a sub that was canceled mid-session) and
+  // the renderer gets license-state-changed if the verdict flipped.
+  const replyToRecorder = (ch, msg) => event.reply(ch, msg)
+  if (!(await assertActivatedOrReply(replyToRecorder, 'record-event'))) return
   let py
   try { py = await ensurePythonEnv() }
   catch (e) {
@@ -2044,7 +2120,7 @@ function runNextWorkflowStep() {
 
 ipcMain.on('run-workflow', async (event, payload) => {
   const reply = (ch, msg) => event.reply(ch, msg)
-  if (!assertActivatedOrReply(reply)) return
+  if (!(await assertActivatedOrReply(reply))) return
   let py
   try { py = await ensurePythonEnv() }
   catch (e) {
