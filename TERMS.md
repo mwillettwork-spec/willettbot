@@ -1,7 +1,7 @@
 # WillettBot Terms of Use
 
-**Effective date:** May 6, 2026
-**Last updated:** May 6, 2026
+**Effective date:** May 7, 2026
+**Last updated:** May 7, 2026
 
 These Terms of Use ("Terms") govern your access to and use of the WillettBot
 desktop application ("the App"), the willettbot.com website ("the Site"),
@@ -133,9 +133,12 @@ accompany the update.
 
 Our collection and handling of information is described in the WillettBot
 Privacy Policy, which is incorporated into these Terms by reference. In
-short: scripts stay on your computer, we do not collect telemetry, and the
-information we keep on our servers is your email address, your Stripe
-customer reference, and metadata about your subscription status.
+short: scripts stay on your computer, we do not collect usage analytics,
+and the information we keep on our servers is your email address, your
+Stripe customer reference, and metadata about your subscription status.
+When the App crashes, an automated crash report containing a stack trace
+and software versions (but no personal data) is sent to a third-party
+error-monitoring service.
 
 ## 10. Beta Software Disclaimer
 
@@ -221,4 +224,4 @@ Questions about these Terms can be sent to:
 **WillettBot Inc.**
 66 Ulster Ave
 Atlantic Beach, NY 11509
-**mwillettwork@gmail.com**
+**support@willettbot.com**

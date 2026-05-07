@@ -1445,8 +1445,8 @@ ipcMain.handle('write-script', async (event, payload) => {
     }
     let filename = String(payload.filename).trim()
     if (!filename.endsWith('.json')) filename += '.json'
-    if (!/^[A-Za-z0-9_\-. ]+$/.test(filename)) {
-      return { ok: false, error: 'Filename may only contain letters, numbers, spaces, _, -, or .' }
+    if (!/^[A-Za-z0-9_\-. ()]+$/.test(filename)) {
+      return { ok: false, error: 'Filename may only contain letters, numbers, spaces, _, -, ., (, or )' }
     }
     // Parse-check the content so we don't write a broken script.
     let parsed
@@ -1468,13 +1468,127 @@ ipcMain.handle('delete-script', async (event, filename) => {
   try {
     if (!filename) return { ok: false, error: 'missing filename' }
     const safe = String(filename).trim()
-    if (!/^[A-Za-z0-9_\-. ]+$/.test(safe)) {
+    if (!/^[A-Za-z0-9_\-. ()]+$/.test(safe)) {
       return { ok: false, error: 'Unsafe filename.' }
     }
     const full = path.join(SCRIPTS_DIR, safe)
     if (!fs.existsSync(full)) return { ok: false, error: 'Not found.' }
     fs.unlinkSync(full)
     return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+// ── SCRIPTS: export a script to disk (Share button) ─────────────────────────
+// Reads a saved script and writes it to a user-chosen location wrapped in a
+// schema envelope. The .willettbot.json suffix makes it recognizable and
+// double-clickable on import. Returns { cancelled: true } if the user
+// dismisses the save dialog.
+const SCRIPT_SCHEMA = 'willettbot-script-v1'
+
+ipcMain.handle('export-script', async (event, filename) => {
+  try {
+    if (!filename) return { ok: false, error: 'missing filename' }
+    const safe = String(filename).trim()
+    if (!/^[A-Za-z0-9_\-. ()]+$/.test(safe)) {
+      return { ok: false, error: 'Unsafe filename.' }
+    }
+    const src = path.join(SCRIPTS_DIR, safe)
+    if (!fs.existsSync(src)) return { ok: false, error: 'Not found.' }
+    let parsed
+    try { parsed = JSON.parse(fs.readFileSync(src, 'utf8')) }
+    catch (e) { return { ok: false, error: 'Could not parse script: ' + e.message } }
+
+    const baseName = safe.replace(/\.json$/i, '')
+    const suggested = baseName + '.willettbot.json'
+    const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]
+    const result = await dialog.showSaveDialog(win, {
+      title: 'Share script',
+      defaultPath: suggested,
+      filters: [{ name: 'WillettBot Script', extensions: ['willettbot.json', 'json'] }],
+    })
+    if (result.canceled || !result.filePath) return { ok: false, cancelled: true }
+
+    const envelope = {
+      schema: SCRIPT_SCHEMA,
+      exportedAt: new Date().toISOString(),
+      exportedFrom: app.getVersion(),
+      name: parsed.name || baseName,
+      description: parsed.description || '',
+      actions: Array.isArray(parsed.actions) ? parsed.actions : [],
+      variables: parsed.variables && typeof parsed.variables === 'object'
+        ? parsed.variables : {},
+    }
+    fs.writeFileSync(result.filePath, JSON.stringify(envelope, null, 2), 'utf8')
+    return { ok: true, savedTo: result.filePath, name: envelope.name }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+// ── SCRIPTS: import a script from disk (+ Add from file button) ─────────────
+// Opens a file picker, validates the schema, and saves the script into
+// SCRIPTS_DIR. Handles name collisions by appending "(imported)" or
+// "(imported 2)" so the user never silently loses a script they had.
+ipcMain.handle('import-script', async () => {
+  try {
+    const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Add script from file',
+      properties: ['openFile'],
+      filters: [
+        { name: 'WillettBot Script', extensions: ['willettbot.json', 'json'] },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+    })
+    if (result.canceled || !result.filePaths || !result.filePaths[0]) {
+      return { ok: false, cancelled: true }
+    }
+    const srcPath = result.filePaths[0]
+    let raw
+    try { raw = fs.readFileSync(srcPath, 'utf8') }
+    catch (e) { return { ok: false, error: 'Could not read file: ' + e.message } }
+
+    let parsed
+    try { parsed = JSON.parse(raw) }
+    catch (e) { return { ok: false, error: 'Not a valid .json file: ' + e.message } }
+
+    if (!parsed || typeof parsed !== 'object') {
+      return { ok: false, error: 'File contents are not a JSON object.' }
+    }
+    if (parsed.schema && parsed.schema !== SCRIPT_SCHEMA) {
+      return { ok: false, error: 'Unsupported file schema: ' + parsed.schema }
+    }
+    if (!Array.isArray(parsed.actions)) {
+      return { ok: false, error: 'Missing "actions" array — does not look like a WillettBot script.' }
+    }
+
+    // Build a safe filename from the script's display name.
+    const rawName = String(parsed.name || path.basename(srcPath, path.extname(srcPath)) || 'imported script').trim()
+    const safeBase = rawName.replace(/[^A-Za-z0-9_\- ()]+/g, '').trim() || 'imported script'
+
+    // Find a non-colliding filename.
+    let filename = safeBase + '.json'
+    if (fs.existsSync(path.join(SCRIPTS_DIR, filename))) {
+      filename = safeBase + ' (imported).json'
+      let n = 2
+      while (fs.existsSync(path.join(SCRIPTS_DIR, filename))) {
+        filename = safeBase + ' (imported ' + n + ').json'
+        n++
+      }
+    }
+
+    // Write out the script in our internal format (no schema envelope).
+    const internal = {
+      name: parsed.name || safeBase,
+      description: parsed.description || '',
+      actions: parsed.actions,
+      variables: parsed.variables && typeof parsed.variables === 'object'
+        ? parsed.variables : {},
+    }
+    fs.writeFileSync(path.join(SCRIPTS_DIR, filename), JSON.stringify(internal, null, 2), 'utf8')
+    return { ok: true, filename: filename, name: internal.name }
   } catch (e) {
     return { ok: false, error: e.message }
   }
@@ -1591,8 +1705,8 @@ ipcMain.handle('save-recorded-script', async (event, payload) => {
     }
     let filename = String(payload.filename).trim()
     if (!filename.endsWith('.json')) filename += '.json'
-    if (!/^[A-Za-z0-9_\-. ]+$/.test(filename)) {
-      return { ok: false, error: 'Filename may only contain letters, numbers, spaces, _, -, or .' }
+    if (!/^[A-Za-z0-9_\-. ()]+$/.test(filename)) {
+      return { ok: false, error: 'Filename may only contain letters, numbers, spaces, _, -, ., (, or )' }
     }
     // Apply any user-supplied display name / description overrides.
     const script = Object.assign({}, payload.script)

@@ -1,7 +1,7 @@
 # WillettBot Privacy Policy
 
-**Effective date:** May 6, 2026
-**Last updated:** May 6, 2026
+**Effective date:** May 7, 2026
+**Last updated:** May 7, 2026
 
 This Privacy Policy explains how **WillettBot Inc.**, a New York corporation
 with its principal office at 66 Ulster Ave, Atlantic Beach, NY 11509 ("we,"
@@ -16,6 +16,10 @@ desktop application ("the App") and the willettbot.com website ("the Site").
   address. We store your email and the metadata about your subscription.
 * We do not collect telemetry about how you use the App, your keystrokes,
   or the contents of your scripts.
+* When the App crashes or hits an unexpected error, an automated crash
+  report is sent to a third-party error-monitoring service (Sentry). The
+  report includes a stack trace, the App version, and your operating-system
+  version, but no personal information and no script content.
 * When the App checks for software updates, it makes a request to GitHub.
   When the App verifies your subscription, it makes a request to our
   server. Both requests include your IP address.
@@ -51,12 +55,32 @@ software.
 
 We do **not** collect:
 
-* Telemetry, usage analytics, or crash reports about how you use the App
+* Usage analytics about how you use the App
 * The content of your scripts, recordings, workflows, or anything you
   automate
 * Your keystrokes, clipboard contents, or screen contents
 * Cookies for advertising, advertising identifiers, or browsing history
 * Anything else, except as explicitly listed below
+
+## Crash and Error Reports
+
+The App is integrated with **Sentry**, a third-party error-monitoring
+service operated by Functional Software, Inc. d/b/a Sentry. When the App
+encounters an unexpected error or crash, it sends a report to Sentry that
+contains:
+
+* A stack trace identifying the lines of code that produced the error
+* The App version and platform (macOS or Windows) and OS version
+* The Electron and Node runtime versions
+* A short technical description of the error
+
+The report does **not** contain your email address, your scripts, your
+keystrokes, the contents of your screen, or any other personal information.
+We have configured Sentry to disable its default IP-address collection.
+Sentry's privacy policy is at <https://sentry.io/privacy/>.
+
+We use these reports solely to identify, prioritize, and fix bugs in the
+App. You may opt out of crash reporting by deleting the App.
 
 ## Information You Provide When You Sign Up
 
@@ -179,4 +203,4 @@ Questions about this Privacy Policy can be sent to:
 **WillettBot Inc.**
 66 Ulster Ave
 Atlantic Beach, NY 11509
-**mwillettwork@gmail.com**
+**support@willettbot.com**
