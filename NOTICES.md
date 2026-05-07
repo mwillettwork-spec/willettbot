@@ -1,8 +1,8 @@
 # Third-Party Notices
 
-WillettBot is a proprietary application copyright © 2026 Myles Willett.
-Its own source code is licensed only as described in `TERMS.md` and the
-copyright headers on each source file.
+WillettBot is a proprietary application copyright © 2026 WillettBot Inc.,
+a New York corporation. Its own source code is licensed only as described
+in `TERMS.md` and the copyright headers on each source file.
 
 WillettBot is built on top of, and distributes, several open-source
 components. Those components remain under their original licenses and are
@@ -12,7 +12,10 @@ fulfillment of those licenses' attribution and notice requirements.
 
 If you have questions about anything below, contact:
 
-**Myles Willett — mwillettwork@gmail.com**
+**WillettBot Inc.**
+66 Ulster Ave
+Atlantic Beach, NY 11509
+**mwillettwork@gmail.com**
 
 ---
 
@@ -119,8 +122,9 @@ the application bundle at `Contents/Resources/app.asar.unpacked/node_modules/<pa
 The WillettBot application code (everything outside the `node_modules/`
 and `bundled-python/` directories) is proprietary and is **not** distributed
 under any of the licenses above. Use of the WillettBot application is
-governed solely by `TERMS.md` and any applicable activation key.
+governed solely by `TERMS.md` and your active subscription on
+willettbot.com.
 
 ---
 
-*Last updated: April 24, 2026*
+*Last updated: May 6, 2026*
