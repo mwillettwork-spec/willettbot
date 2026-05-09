@@ -3082,7 +3082,16 @@
                               {key:'secure',label:'Sensitive — don\'t log the value',type:'bool'}] },
     switch_desktop:{ icon: '⇔',  klass: 'system', title: 'Switch desktop',
                      fields: [{key:'direction',label:'Direction',type:'select',opts:['left','right']},
-                              {key:'count',label:'How many',type:'int'}] }
+                              {key:'count',label:'How many',type:'int'}] },
+    // Vertical scroll. Captured as one block per gesture (the recorder
+    // aggregates trackpad micro-events into a single tick count).
+    // Positive amount = scroll up, negative = scroll down. x/y is the
+    // cursor anchor — replay positions the cursor there before scrolling
+    // so multi-pane apps scroll the right pane.
+    scroll:        { icon: '↕',  klass: 'mouse',  title: 'Scroll',
+                     fields: [{key:'amount',label:'Ticks (− down, + up)',type:'int'},
+                              {key:'x',label:'Cursor X',type:'int'},
+                              {key:'y',label:'Cursor Y',type:'int'}] }
   }
 
   function _unknownActionMeta(name) {
@@ -3115,7 +3124,8 @@
     // field, no Enter-press, not sensitive) just works on insert with no edits.
     manual_input: { message: 'Enter value:', type: true, pressEnter: false,
                     storeAs: '', secure: false },
-    switch_desktop: { direction: 'right', count: 1 }
+    switch_desktop: { direction: 'right', count: 1 },
+    scroll:         { amount: -3, x: 0, y: 0 }
   }
 
   function _convertAction(oldAction, newType) {
@@ -4321,6 +4331,8 @@
                                   + (a.app ? ' with ' + a.app : '')
       case 'switch_desktop': return 'swipe ' + (a.direction || 'right')
                                   + (a.count && a.count > 1 ? ' ×' + a.count : '')
+      case 'scroll':       return 'scroll ' + (a.amount > 0 ? 'up' : 'down')
+                                  + ' ×' + Math.abs(a.amount || 0)
       default:             return a.action || '?'
     }
   }

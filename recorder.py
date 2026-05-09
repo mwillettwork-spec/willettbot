@@ -211,6 +211,15 @@ CONTEXT_COALESCE_WINDOW  = 2.0    # seconds — a context event within this wind
 HSCROLL_BURST_WINDOW     = 0.35   # seconds — flush + emit when no scroll for this long
 HSCROLL_BURST_THRESHOLD  = 3      # |sum dx| must exceed this to count as a gesture
 
+# Vertical-scroll → scroll-action capture. Same idea as horizontal but the
+# product is a real `scroll` step (not a desktop switch). Trackpad scrolling
+# fires dozens of micro-events per gesture, so we aggregate dy across a short
+# idle window into a single normalized "tick count" for replay. Cursor x/y
+# at the start of the burst is captured so the replay scrolls over the same
+# spot in the right window — important for apps like Excel and multi-pane
+# web pages where scroll only affects the panel under the cursor.
+VSCROLL_BURST_WINDOW     = 0.35   # seconds — flush + emit when no scroll for this long
+
 
 class Recorder:
     def __init__(self, start_hotkey, end_hotkey):
@@ -267,6 +276,18 @@ class Recorder:
         self._hscroll_sum = 0.0             # signed dx sum over the active burst
         self._hscroll_last_ts = 0.0         # ts of most recent h-scroll event
 
+        # Vertical-scroll accumulator for scroll-action capture. Anchor x/y
+        # is captured at the FIRST event of a burst so replay knows where to
+        # position the cursor — subsequent events keep adding to the dy sum
+        # but don't move the anchor. We also track first/last timestamps so
+        # the runner can re-play the scroll over the same duration the user
+        # took (matched-speed playback).
+        self._vscroll_sum      = 0.0        # signed dy sum over the active burst
+        self._vscroll_first_ts = 0.0        # ts of first event in burst
+        self._vscroll_last_ts  = 0.0        # ts of most recent v-scroll event
+        self._vscroll_x        = 0          # cursor x at start of burst
+        self._vscroll_y        = 0          # cursor y at start of burst
+
         # Wake signal for the context poller. on_click sets this so the
         # poller re-samples immediately instead of sleeping out its 0.2s
         # interval — closes the race where an app-launch triggered by the
@@ -293,6 +314,12 @@ class Recorder:
             return False   # stops the keyboard listener
 
         now = time.time()
+
+        # Flush a pending v-scroll burst before we touch any key — the user
+        # was scrolling, then started typing. The scroll should land in the
+        # events list before whatever this key produces.
+        if self._vscroll_sum != 0:
+            self._flush_vscroll()
 
         # Track modifier state but don't emit anything yet.
         if key in MODIFIER_KEYS:
@@ -392,23 +419,50 @@ class Recorder:
         # Duration is filled in during compile so it matches real-time pacing.
         self._record(now, {"action": "move_to", "x": int(x), "y": int(y)})
 
-    # ── mouse: horizontal scroll → switch_desktop ────────────────────────
-    # Best-effort only: macOS suppresses 3-finger desktop-switch swipes at
-    # the WindowServer level so pynput never sees them. Two-finger horizontal
-    # scrolls DO make it through, and users can also add switch_desktop
-    # blocks manually via the editor.
+    # ── mouse: scroll → switch_desktop (horizontal) | scroll (vertical) ──
+    # Horizontal best-effort only: macOS suppresses 3-finger desktop-switch
+    # swipes at the WindowServer level so pynput never sees them. Two-finger
+    # horizontal scrolls DO make it through, and users can also add
+    # switch_desktop blocks manually via the editor.
+    #
+    # Vertical scrolls are aggregated separately into one `scroll` action
+    # per burst so replays can re-do "scroll down to find the button" flows.
     def on_scroll(self, x, y, dx, dy):
         if self.state != 'recording':
             return
-        # Ignore vertical scrolls — we only care about horizontal bursts.
-        if not dx:
-            return
         now = time.time()
-        # If the previous burst ended long ago, reset.
-        if (now - self._hscroll_last_ts) > HSCROLL_BURST_WINDOW and self._hscroll_sum != 0:
-            self._flush_hscroll()
-        self._hscroll_sum += float(dx)
-        self._hscroll_last_ts = now
+
+        # Vertical wins over horizontal. Trackpad scrolls leak small dx
+        # values during what the user perceives as pure vertical motion
+        # (a few pixels of jitter per event). If we counted those they'd
+        # accumulate over a long scroll and eventually trip the
+        # switch_desktop threshold — recording phantom desktop swipes the
+        # user never made. Routing mixed events to vscroll-only and
+        # zeroing the hscroll accumulator on every vscroll event drops
+        # the jitter cleanly.
+        if dy:
+            self._hscroll_sum = 0.0   # drop accumulated jitter
+            if (now - self._vscroll_last_ts) > VSCROLL_BURST_WINDOW and self._vscroll_sum != 0:
+                self._flush_vscroll()
+            if self._vscroll_sum == 0:
+                # Anchor cursor x/y at the start of each burst so replay
+                # can position the cursor over the right spot before
+                # scrolling — apps like Excel / split-pane web pages
+                # only scroll the panel under the cursor.
+                self._vscroll_x = int(x)
+                self._vscroll_y = int(y)
+                self._vscroll_first_ts = now
+            self._vscroll_sum += float(dy)
+            self._vscroll_last_ts = now
+            return
+
+        # Pure horizontal scroll (no vertical component): accumulate for
+        # switch_desktop detection.
+        if dx:
+            if (now - self._hscroll_last_ts) > HSCROLL_BURST_WINDOW and self._hscroll_sum != 0:
+                self._flush_hscroll()
+            self._hscroll_sum += float(dx)
+            self._hscroll_last_ts = now
 
     def _flush_hscroll(self):
         """Called when an h-scroll burst ends (either explicitly by a non-scroll
@@ -427,6 +481,35 @@ class Recorder:
             "direction": direction,
             "count": 1
         })
+
+    def _flush_vscroll(self):
+        """Called when a v-scroll burst ends. Emits one scroll step carrying
+        the rounded tick count, the cursor anchor, the burst's duration in
+        milliseconds, and the usual app/window context (so window-relative
+        offset works on replay).
+
+        Sign convention: pynput's dy is positive for scroll-up gestures and
+        negative for scroll-down. pyautogui.scroll uses the same convention,
+        so we forward the integer tick count as-is.
+
+        Duration: the runner uses this to pace replay so the scroll takes
+        roughly the same amount of time as the original gesture — a half-
+        second swipe replays in half a second, a slow scroll replays slow."""
+        s = self._vscroll_sum
+        self._vscroll_sum = 0.0
+        amount = int(round(s))
+        if amount == 0:
+            return
+        duration_ms = int(round((self._vscroll_last_ts - self._vscroll_first_ts) * 1000))
+        if duration_ms < 0:
+            duration_ms = 0
+        self._record(time.time(), self._attach_app({
+            "action": "scroll",
+            "x": self._vscroll_x,
+            "y": self._vscroll_y,
+            "amount": amount,
+            "duration_ms": duration_ms,
+        }))
 
     def _attach_app(self, action):
         """If the poll thread has cached a frontmost app, tag this action with
@@ -466,6 +549,12 @@ class Recorder:
 
         if pressed:
             # Defer recording until release so we can tell click vs drag apart.
+            # Flush any pending v-scroll burst first so a "scroll then click"
+            # sequence stays in the right order — the scroll action carries
+            # the cursor position from BEFORE the click, the click carries
+            # its own coords from after.
+            if self._vscroll_sum != 0:
+                self._flush_vscroll()
             self._pending_press = {
                 'x': int(x), 'y': int(y),
                 'button': btn_name, 'ts': now
@@ -660,6 +749,12 @@ class Recorder:
             if (self._hscroll_sum != 0
                     and (now - self._hscroll_last_ts) > HSCROLL_BURST_WINDOW):
                 self._flush_hscroll()
+            # Same idea for vertical scrolls: emit the aggregated scroll
+            # action as soon as the burst goes quiet, regardless of whether
+            # the user did anything else afterward.
+            if (self._vscroll_sum != 0
+                    and (now - self._vscroll_last_ts) > VSCROLL_BURST_WINDOW):
+                self._flush_vscroll()
             app = self._query_frontmost_app() or self._ctx_prev_app
 
             # Refresh frontmost window title on every poll so clicks get
@@ -1279,8 +1374,9 @@ def main():
         except Exception: pass
         # ctx_thread is a daemon — no explicit stop needed once done_event is set.
 
-    # Final flush: any trailing h-scroll burst that didn't hit the poll tick.
+    # Final flush: any trailing scroll burst that didn't hit the poll tick.
     rec._flush_hscroll()
+    rec._flush_vscroll()
     actions = rec.compile()
     script = {
         "name": args.name,
