@@ -487,70 +487,59 @@ def run_action(action, variables):
         # Vertical scroll replay. Sign convention matches pynput / pyautogui:
         # positive amount = scroll up, negative = scroll down.
         #
-        # Unit conversion: pynput on macOS delivers trackpad scroll deltas
-        # in PIXELS (scrollingDeltaY from NSEvent). pyautogui.scroll() takes
-        # LINE ticks, where ~20 pixels ≈ 1 tick on a default Mac display.
-        # Without this scaling, a moderate trackpad scroll (~500 px summed)
-        # replays as 500 lines and the page slams to the bottom. Windows
-        # mouse wheels already report notch-based deltas, so no scaling
-        # needed there.
-        #
-        # Speed matching: we spread the chunked scroll across the same
-        # `duration_ms` the user took during recording. A half-second swipe
-        # replays over half a second; a slow lazy scroll replays slow.
-        # Older recordings without duration_ms fall back to a sensible
-        # 250ms default — enough to avoid the instant-slam look without
-        # being too slow.
-        _ensure_frontmost_app(action)
+        # Performance note: scroll actions used to call _ensure_frontmost_app
+        # AND _translate_click before each scroll. Both run AppleScript
+        # queries (100-300 ms apiece) which compounded into a noticeable
+        # pause before back-to-back scrolls. We deliberately skip both for
+        # scrolls — the previous action (a click, app switch, or scroll)
+        # already brought the right window to the front, and scroll events
+        # affect whatever pane the cursor is over rather than caring about
+        # exact pixel positioning. Trade-off: scrolls on a window that has
+        # been moved between record and replay won't track the offset —
+        # but the cursor still lands near where the user scrolled, which
+        # is good enough for "scroll past the header" use cases.
         raw = int(action.get('amount', 0))
         if raw == 0:
             # No-op scroll — skip rather than make a 0-tick OS call.
             pass
         else:
-            x = action.get('x')
-            y = action.get('y')
-            if x is not None and y is not None:
-                nx, ny = _translate_click(action, int(x), int(y))
-                pyautogui.moveTo(nx, ny, duration=0)
-            # Convert recorder units into pyautogui ticks. Empirical scale:
-            # pynput's scrollingDeltaY on Mac trackpads is in fractional
-            # line units (NOT raw pixels — that was the wrong assumption
-            # earlier); pyautogui.scroll() takes the same line units. A
-            # ~5x divisor lines up "scroll N px in Claude" → "page moves
-            # the same visible distance" empirically. Tune this number if
-            # replay feels off.
-            if platform.is_mac():
-                ticks = int(raw / 5)
-            else:
-                ticks = raw
-            # Always preserve direction even if scaling rounded to zero.
-            if ticks == 0:
-                ticks = -1 if raw < 0 else 1
-
-            # Pace the chunks across the recorded duration so replay speed
-            # matches the original gesture. Two non-obvious knobs:
-            #
-            # 1. We use 3-tick chunks instead of 1-tick. Smaller chunks felt
-            #    smoother but pyautogui's per-call overhead (the global
-            #    PAUSE that runs after every call, plus the OS event-post
-            #    cost) added up to far more than the recorded duration on
-            #    real Mac trackpad scrolls.
-            #
-            # 2. We zero pyautogui.PAUSE during the loop. The PAUSE exists
-            #    to give apps time to react between unrelated actions, but
-            #    for a tight scroll burst it just makes the replay feel
-            #    sluggish vs. the original — we control cadence ourselves
-            #    via time.sleep below. We restore the previous value in
-            #    finally so other actions still get the safety pause.
-            duration_s = max(0.0, int(action.get('duration_ms', 250)) / 1000.0)
-            step = 3 if ticks > 0 else -3
-            remaining = ticks
-            n_chunks = (abs(ticks) + abs(step) - 1) // abs(step)
-            gap_s = (duration_s / n_chunks) if n_chunks > 0 else 0.0
-
+            # Zero pyautogui's global PAUSE for the entire scroll handler.
+            # Default 50 ms post-call pauses are useful between unrelated
+            # actions but here they show up as visible lag between the
+            # cursor warp and the first scroll tick, then again between
+            # every chunk. We control cadence ourselves with time.sleep
+            # below and restore the original value in `finally`.
             saved_pause = pyautogui.PAUSE
             pyautogui.PAUSE = 0
             try:
+                x = action.get('x')
+                y = action.get('y')
+                if x is not None and y is not None:
+                    pyautogui.moveTo(int(x), int(y), duration=0)
+
+                # Convert recorder units into pyautogui ticks. Empirical
+                # scale, tuned by hand: pynput delivers scrollingDeltaY in
+                # fractional line units, and pyautogui.scroll wants whole-
+                # line ticks. A ~3.5x divisor is the closest match overall;
+                # asymmetric per-direction divisors got worse, not better.
+                if platform.is_mac():
+                    ticks = int(raw / 3.5)
+                else:
+                    ticks = raw
+                # Always preserve direction even if scaling rounded to zero.
+                if ticks == 0:
+                    ticks = -1 if raw < 0 else 1
+
+                # Pace the chunks across the recorded duration so replay
+                # speed matches the original gesture. 3-tick chunks (vs
+                # 1-tick) keep the per-OS-call overhead from inflating the
+                # total replay time past the user's recorded duration.
+                duration_s = max(0.0, int(action.get('duration_ms', 250)) / 1000.0)
+                step = 3 if ticks > 0 else -3
+                remaining = ticks
+                n_chunks = (abs(ticks) + abs(step) - 1) // abs(step)
+                gap_s = (duration_s / n_chunks) if n_chunks > 0 else 0.0
+
                 for i in range(n_chunks):
                     chunk = step if abs(remaining) >= abs(step) else remaining
                     pyautogui.scroll(chunk)

@@ -253,6 +253,12 @@ class Recorder:
         self._ctx_prev_finder_sel = None    # last-seen Finder selection path
         self._ctx_prev_window_count = {}    # app-name → last-seen window count
                                             # (drops → user closed a window)
+        self._ctx_last_title_change_ts = {} # app-name → ts of last title change.
+                                            # Used to suppress close-detection
+                                            # during navigation (Chrome / any
+                                            # app that swaps a tab's title
+                                            # mid-page-load makes window count
+                                            # flicker briefly).
         self._ctx_window_drop_pending = {}  # app-name → consecutive polls
                                             # we've seen the count BELOW the
                                             # baseline. Required to be ≥3
@@ -511,27 +517,55 @@ class Recorder:
             "duration_ms": duration_ms,
         }))
 
-    def _attach_app(self, action):
-        """If the poll thread has cached a frontmost app, tag this action with
-        it so the runner can refocus on replay if the app isn't already
-        frontmost. Avoids the 'click lands on the wrong app because windows
-        moved' problem without requiring pixel-perfect window geometry.
+    def _snapshot_app_ctx(self):
+        """Synchronously query the OS for the frontmost app, window title,
+        and window rect — used at mouse-DOWN time so a click captures the
+        state of the world the user was clicking INTO, not the state after
+        the click triggered a navigation.
 
-        Also tags the frontmost window title when we have one: that lets the
-        runner do a smarter refocus (raise the *specific* window the user was
-        clicking into rather than whatever window of that app is frontmost).
+        This is more expensive than reading the poll-thread cache (~5–15 ms
+        per call on macOS) but the cost is per-press, not per-event, which
+        is fine even during rapid clicking. Falls back to whatever we have
+        cached if the OS query fails."""
+        try:
+            app = platform.get_frontmost_app() or self._ctx_prev_app
+        except Exception:
+            app = self._ctx_prev_app
+        try:
+            title = platform.get_frontmost_window_title() or self._ctx_prev_window_title
+        except Exception:
+            title = self._ctx_prev_window_title
+        try:
+            rect = platform.get_frontmost_window_rect() or self._ctx_prev_window_rect
+        except Exception:
+            rect = self._ctx_prev_window_rect
+        return {'app': app, 'window_title': title, 'window_rect': rect}
 
-        Finally, when we have the frontmost window's rect ({x, y, w, h} at
-        click time), we attach that too so the runner can shift the click by
-        the delta if the user has moved the window between record and replay.
+    def _attach_app(self, action, snapshot=None):
+        """Tag an action with the app / window-title / window-rect of where
+        the user was acting. If `snapshot` is provided it's used verbatim
+        (the click path captures one at mouse-down so the snapshot reflects
+        pre-navigation state); otherwise we fall back to the poll-thread
+        cache for non-click actions like hotkeys.
+
+        These three fields drive replay:
+          - `app`           → re-focus the right app before clicking
+          - `window_title`  → raise the specific window inside that app
+          - `window_rect`   → shift click coords if the window has moved
         """
-        app = self._ctx_prev_app
+        if snapshot is None:
+            snapshot = {
+                'app':          self._ctx_prev_app,
+                'window_title': self._ctx_prev_window_title,
+                'window_rect':  self._ctx_prev_window_rect,
+            }
+        app = snapshot.get('app')
         if app:
             action['app'] = app
-        title = self._ctx_prev_window_title
+        title = snapshot.get('window_title')
         if title:
             action['window_title'] = title
-        rect = self._ctx_prev_window_rect
+        rect = snapshot.get('window_rect')
         if rect:
             action['window_rect'] = rect
         return action
@@ -555,9 +589,21 @@ class Recorder:
             # its own coords from after.
             if self._vscroll_sum != 0:
                 self._flush_vscroll()
+            # Snapshot the frontmost app/title/rect AT PRESS TIME — not
+            # release time, not from the (often-stale) poller cache. Two
+            # bugs this fixes:
+            #   (a) Clicking a link in Chrome navigates the page DURING the
+            #       brief press→release interval; without a press-time
+            #       snapshot the click would land in the JSON stamped with
+            #       the *destination* page's title, and replay's
+            #       raise_window_by_title would fail.
+            #   (b) Clicking immediately after switching apps lands in the
+            #       JSON tagged with the previous app, because the poller
+            #       hadn't run yet. The synchronous query here catches up.
             self._pending_press = {
                 'x': int(x), 'y': int(y),
-                'button': btn_name, 'ts': now
+                'button': btn_name, 'ts': now,
+                'ctx': self._snapshot_app_ctx(),
             }
             return
 
@@ -578,7 +624,7 @@ class Recorder:
                 "toX": int(x), "toY": int(y),
                 "button": btn_name,
                 "duration": round(max(0.2, now - press['ts']), 2)
-            }))
+            }, snapshot=press.get('ctx')))
             # Reset move baseline so the next sample isn't spuriously close.
             self._last_move_pos = (int(x), int(y))
             self._last_move_ts = now
@@ -606,7 +652,7 @@ class Recorder:
             "action": "click",
             "x": px, "y": py,
             "button": btn_name
-        }))
+        }, snapshot=press.get('ctx')))
         # Nudge the context poller to re-sample right now — catches
         # Finder→Preview / Dock→app / folder-navigate transitions that
         # happen within the 0.2s poll gap. A second nudge fires ~0.35s
@@ -762,8 +808,18 @@ class Recorder:
             # the app first came to the front. Errors / empty results leave
             # the previous title cached so transient osascript hiccups don't
             # drop the anchor.
+            #
+            # Also stamp a "title changed for this app" timestamp whenever
+            # the title differs from what we previously had. The window-
+            # close detector uses this to suppress phantom Cmd+W events
+            # during navigations — Chrome (and any app that swaps a tab's
+            # title mid-load) makes the window count flicker briefly while
+            # the new page loads, and a pure-coincidence count drop during
+            # that window would otherwise be misclassified as a close.
             title = self._query_frontmost_window_title()
             if title:
+                if title != self._ctx_prev_window_title and app:
+                    self._ctx_last_title_change_ts[app] = now
                 self._ctx_prev_window_title = title
 
             # Refresh the frontmost window's rect on every poll so clicks
@@ -882,11 +938,19 @@ class Recorder:
                 # Suppression window: file manager just navigated -> skip.
                 FM_NAV_FREEZE = 1.5    # seconds after a nav before close-detection re-arms
                 CLOSE_POLLS_REQUIRED = 3
+                # Same idea, generalized: ANY app that's mid-navigation
+                # (window title just changed) is unstable for window-count
+                # reads. Chrome / Safari / any browser flickers count down
+                # to 0 briefly when a new tab loads. Suppress for 1.5s
+                # after the most recent title change for this app.
+                NAV_TITLE_FREEZE = 1.5
                 fm_freeze = (
                     app == file_mgr
                     and (now - self._ctx_last_fm_nav_ts) < FM_NAV_FREEZE
                 )
-                if fm_freeze:
+                last_title_ts = self._ctx_last_title_change_ts.get(app, 0.0)
+                title_freeze = (now - last_title_ts) < NAV_TITLE_FREEZE
+                if fm_freeze or title_freeze:
                     # Don't accumulate or commit drops — but still take the
                     # current count as the new baseline so we don't fire the
                     # moment the freeze ends (e.g. user closes a window
