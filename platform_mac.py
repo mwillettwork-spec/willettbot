@@ -108,6 +108,42 @@ def get_frontmost_window_title(timeout=2.0):
     ], timeout=timeout)
 
 
+def get_frontmost_window_rect(timeout=2.0):
+    """Return {'x', 'y', 'w', 'h'} of the frontmost app's front window in
+    screen pixels, or None if anything goes wrong (no frontmost app, no
+    window, AppleScript timeout, AX permission denied, etc.).
+
+    Used by both the recorder (cache the rect at click time so we can
+    translate the click into a window-relative offset) and the runner (read
+    the rect again at replay time and shift the click by the delta if the
+    window has moved).
+
+    `position` and `size` of an AX window come back as AppleScript lists like
+    `{120, 80}`. We pick out the integer parts with `item 1 of …` and stitch
+    them into a single comma-separated line so the parse is one split."""
+    out = _osascript([
+        'tell application "System Events"',
+        'try',
+        'set p to first application process whose frontmost is true',
+        'if (count of windows of p) is 0 then return ""',
+        'set w to front window of p',
+        'set pp to position of w',
+        'set ss to size of w',
+        'return ((item 1 of pp) as string) & "," & ((item 2 of pp) as string) & "," & ((item 1 of ss) as string) & "," & ((item 2 of ss) as string)',
+        'on error',
+        'return ""',
+        'end try',
+        'end tell'
+    ], timeout=timeout)
+    if not out:
+        return None
+    try:
+        x, y, w, h = [int(v.strip()) for v in out.split(',')]
+        return {'x': x, 'y': y, 'w': w, 'h': h}
+    except Exception:
+        return None
+
+
 def get_window_count(app_name, timeout=2.0):
     """Number of windows owned by `app_name`, or None if we can't tell."""
     if not app_name:

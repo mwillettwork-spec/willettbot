@@ -22,6 +22,7 @@ Public API
 Queries (no side effects):
     get_frontmost_app(timeout=2.0)            -> str
     get_frontmost_window_title(timeout=2.0)   -> str
+    get_frontmost_window_rect(timeout=2.0)    -> {x,y,w,h} | None
     get_window_count(app, timeout=2.0)        -> int | None
     get_file_manager_name()                   -> str   # "Finder" | "Explorer" | "Files"
     get_file_manager_front_path(timeout=1.5)  -> str
@@ -64,6 +65,7 @@ if sys.platform == 'darwin':
     from platform_mac import (            # noqa: F401  (explicit for IDEs)
         get_frontmost_app,
         get_frontmost_window_title,
+        get_frontmost_window_rect,
         get_window_count,
         get_file_manager_name,
         get_file_manager_front_path,
@@ -89,6 +91,7 @@ elif sys.platform == 'win32':
     from platform_win import (            # noqa: F401
         get_frontmost_app,
         get_frontmost_window_title,
+        get_frontmost_window_rect,
         get_window_count,
         get_file_manager_name,
         get_file_manager_front_path,
@@ -119,6 +122,7 @@ else:
     from platform_linux import (          # noqa: F401
         get_frontmost_app,
         get_frontmost_window_title,
+        get_frontmost_window_rect,
         get_window_count,
         get_file_manager_name,
         get_file_manager_front_path,

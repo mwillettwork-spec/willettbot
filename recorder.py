@@ -234,6 +234,12 @@ class Recorder:
         self._ctx_prev_window_title = None  # last-seen frontmost window title
                                             # (used to refocus THE right window
                                             # on replay, not just the right app)
+        self._ctx_prev_window_rect = None   # last-seen frontmost window rect
+                                            # {x, y, w, h} — captured so click
+                                            # actions can be replayed relative
+                                            # to wherever the user has the
+                                            # window NOW, not where it was
+                                            # when they recorded
         self._ctx_prev_finder_path = None   # last-seen Finder window path
         self._ctx_prev_finder_sel = None    # last-seen Finder selection path
         self._ctx_prev_window_count = {}    # app-name → last-seen window count
@@ -430,8 +436,11 @@ class Recorder:
 
         Also tags the frontmost window title when we have one: that lets the
         runner do a smarter refocus (raise the *specific* window the user was
-        clicking into rather than whatever window of that app is frontmost),
-        which is the cheapest pixel-coord-reduction win we can ship today.
+        clicking into rather than whatever window of that app is frontmost).
+
+        Finally, when we have the frontmost window's rect ({x, y, w, h} at
+        click time), we attach that too so the runner can shift the click by
+        the delta if the user has moved the window between record and replay.
         """
         app = self._ctx_prev_app
         if app:
@@ -439,6 +448,9 @@ class Recorder:
         title = self._ctx_prev_window_title
         if title:
             action['window_title'] = title
+        rect = self._ctx_prev_window_rect
+        if rect:
+            action['window_rect'] = rect
         return action
 
     # ── mouse: clicks + drags ────────────────────────────────────────────
@@ -659,6 +671,18 @@ class Recorder:
             if title:
                 self._ctx_prev_window_title = title
 
+            # Refresh the frontmost window's rect on every poll so clicks
+            # carry an accurate "where was the window when I clicked it"
+            # snapshot. None on Wayland / when AX permission is missing /
+            # AppleScript timeout — same defensive pattern as the title:
+            # keep the previous good value rather than dropping the anchor.
+            try:
+                rect = platform.get_frontmost_window_rect()
+            except Exception:
+                rect = None
+            if rect:
+                self._ctx_prev_window_rect = rect
+
             file_mgr = platform.get_file_manager_name()  # Finder / Explorer / Files
 
             if app and app != self._ctx_prev_app:
@@ -710,9 +734,10 @@ class Recorder:
                         "name":  app
                     })
                 self._ctx_prev_app = app
-                # App changed → the cached window title belongs to the old
-                # app. Clear so we don't mis-anchor subsequent clicks.
+                # App changed → the cached window title + rect belong to the
+                # old app. Clear so we don't mis-anchor subsequent clicks.
                 self._ctx_prev_window_title = None
+                self._ctx_prev_window_rect  = None
                 # Leaving the file manager invalidates its cached state.
                 if app != file_mgr:
                     self._ctx_prev_finder_path = None

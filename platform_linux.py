@@ -147,6 +147,36 @@ def get_frontmost_window_title(timeout=2.0):
     return _run(['xdotool', 'getactivewindow', 'getwindowname'], timeout=timeout)
 
 
+def get_frontmost_window_rect(timeout=2.0):
+    """Return {'x', 'y', 'w', 'h'} of the active window in screen pixels, or
+    None if xdotool isn't available or the query fails (e.g. Wayland session
+    where xdotool can't introspect window geometry).
+
+    Uses `xdotool getactivewindow getwindowgeometry --shell` which prints
+    lines like X=120 / Y=80 / WIDTH=1024 / HEIGHT=768."""
+    if not _have('xdotool'):
+        return None
+    out = _run(['xdotool', 'getactivewindow', 'getwindowgeometry', '--shell'],
+               timeout=timeout)
+    if not out:
+        return None
+    fields = {}
+    for line in out.splitlines():
+        if '=' not in line:
+            continue
+        k, v = line.split('=', 1)
+        fields[k.strip()] = v.strip()
+    try:
+        return {
+            'x': int(fields['X']),
+            'y': int(fields['Y']),
+            'w': int(fields['WIDTH']),
+            'h': int(fields['HEIGHT']),
+        }
+    except Exception:
+        return None
+
+
 def get_window_count(app_name, timeout=2.0):
     """Approximate window count for `app_name`. Uses wmctrl -lx and matches
     the 4th column (WM_CLASS). Returns None on failure."""

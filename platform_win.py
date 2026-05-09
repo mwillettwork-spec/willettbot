@@ -242,6 +242,30 @@ def get_frontmost_window_title(timeout=2.0):
         return ''
 
 
+def get_frontmost_window_rect(timeout=2.0):
+    """Return {'x', 'y', 'w', 'h'} of the foreground window in screen pixels,
+    or None if pywin32 isn't available or there's no foreground window.
+
+    GetWindowRect returns (left, top, right, bottom) in screen coords; we
+    convert to top-left + width/height for parity with the macOS helper.
+
+    Note: on Windows 10+ a window can have an invisible "DWM frame" extending
+    a few pixels outside the visible chrome. For replay we don't care — the
+    delta between record-time and replay-time rects is what matters and the
+    invisible frame is the same size in both, so it cancels out."""
+    w = _w32()
+    if not w:
+        return None
+    try:
+        hwnd = w['gui'].GetForegroundWindow()
+        if not hwnd:
+            return None
+        l, t, r, b = w['gui'].GetWindowRect(hwnd)
+        return {'x': int(l), 'y': int(t), 'w': int(r - l), 'h': int(b - t)}
+    except Exception:
+        return None
+
+
 def get_window_count(app_name, timeout=2.0):
     """Number of top-level visible windows whose process maps to `app_name`,
     or None if pywin32 isn't available."""

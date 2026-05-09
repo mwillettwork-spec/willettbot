@@ -256,6 +256,45 @@ def _ensure_frontmost_app(action):
             time.sleep(0.12)
 
 
+def _translate_click(action, x, y):
+    """If the recorded action knows where its window WAS at record time
+    (`window_rect`) and we can read where the same window IS right now,
+    shift the click by the delta so it lands in the same spot inside the
+    window — even if the user has dragged the window across the screen
+    since recording.
+
+    Returns (new_x, new_y). Falls back to the original (x, y) whenever:
+      * the recorded action has no window_rect (older script — pre-offset)
+      * the platform helper can't read the current rect (no AX permission,
+        Wayland session, frontmost has no window, etc.)
+      * the delta is zero (window hasn't moved — the common path)
+
+    Soft-fail by design: we'd rather replay at the original coords and
+    possibly miss than abort the script. The existing pause-on-mismatch
+    UX already covers the user when a click lands wrong."""
+    rec = action.get('window_rect')
+    if not rec or not isinstance(rec, dict):
+        return x, y
+    rec_x = rec.get('x')
+    rec_y = rec.get('y')
+    if rec_x is None or rec_y is None:
+        return x, y
+    try:
+        cur = platform.get_frontmost_window_rect()
+    except Exception:
+        cur = None
+    if not cur:
+        return x, y
+    dx = int(cur.get('x', rec_x)) - int(rec_x)
+    dy = int(cur.get('y', rec_y)) - int(rec_y)
+    if dx == 0 and dy == 0:
+        return x, y
+    emit({'event': 'log',
+          'message': 'Adjusted click by (' + str(dx) + ', ' + str(dy)
+                     + ') — window has moved since recording'})
+    return x + dx, y + dy
+
+
 # ── ACTION DISPATCH ──────────────────────────────────────────────────────────
 
 def run_action(action, variables):
@@ -391,19 +430,13 @@ def run_action(action, variables):
 
     elif kind == 'click':
         _ensure_frontmost_app(action)
-        pyautogui.click(
-            x=int(action['x']),
-            y=int(action['y']),
-            button=action.get('button', 'left')
-        )
+        x, y = _translate_click(action, int(action['x']), int(action['y']))
+        pyautogui.click(x=x, y=y, button=action.get('button', 'left'))
 
     elif kind == 'double_click':
         _ensure_frontmost_app(action)
-        pyautogui.doubleClick(
-            x=int(action['x']),
-            y=int(action['y']),
-            button=action.get('button', 'left')
-        )
+        x, y = _translate_click(action, int(action['x']), int(action['y']))
+        pyautogui.doubleClick(x=x, y=y, button=action.get('button', 'left'))
 
     elif kind == 'drag':
         # Drag-and-drop: jump to the start, press the button, glide to the
@@ -416,8 +449,15 @@ def run_action(action, variables):
         to_y   = int(action.get('toY', 0))
         btn    = action.get('button', 'left')
         duration = float(action.get('duration', 0.3))
-        pyautogui.moveTo(from_x, from_y)
-        pyautogui.dragTo(to_x, to_y, duration=duration, button=btn)
+        # Both endpoints sit inside the same window, so they get the same
+        # delta. Translate once via the start point — re-using the same dx
+        # for the end point keeps the drag's geometry intact (a 200-px swipe
+        # stays a 200-px swipe even if the window has moved).
+        nfx, nfy = _translate_click(action, from_x, from_y)
+        dx = nfx - from_x
+        dy = nfy - from_y
+        pyautogui.moveTo(nfx, nfy)
+        pyautogui.dragTo(to_x + dx, to_y + dy, duration=duration, button=btn)
 
     elif kind == 'move_to':
         # Ignore recorded `duration`: always teleport. Glides were the #1
