@@ -1,11 +1,11 @@
 {
   "name": "willettbot",
-  "version": "1.0.34",
+  "version": "1.0.36",
   "description": "Desktop automation for non-technical users — record, edit, and replay macros.",
   "main": "main.js",
   "author": {
-    "name": "Myles Willett",
-    "email": "mwillettwork@gmail.com"
+    "name": "WillettBot Inc.",
+    "email": "support@willettbot.com"
   },
   "license": "ISC",
   "type": "commonjs",
@@ -144,7 +144,7 @@
           ]
         }
       ],
-      "publisherName": "Myles Willett",
+      "publisherName": "WillettBot Inc.",
       "verifyUpdateCodeSignature": false,
       "sign": "./scripts-build/sign-windows.js"
     },

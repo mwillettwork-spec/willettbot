@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Myles Willett. All rights reserved.
+// Copyright (c) 2026 WillettBot Inc. All rights reserved.
 // Proprietary and confidential. No reproduction, distribution, or use
 // without express written permission.
 
@@ -159,7 +159,7 @@ const PY_DIR = __dirname.includes(`app.asar${path.sep}`) || __dirname.endsWith('
 //   2. DEV MODE (`npm start`): no bundled Python on disk. Fall back to
 //      creating a venv in DATA_DIR the first time and pip-install the
 //      deps from the user's system Python. This is how the dev loop
-//      works without requiring Myles to run prepare-python.sh.
+//      works without requiring the developer to run prepare-python.sh.
 
 // PACKAGED path: extraResources in package.json copies bundled-python/python/
 // to <app-resources>/python/ at runtime. The exact Python binary path differs
@@ -1433,6 +1433,14 @@ ipcMain.on('stop-script', () => {
     try { scriptProc.kill('SIGTERM') } catch (e) {}
     scriptProc = null
   }
+  // A workflow can be sitting on a clicker step right now, in which case
+  // the running subprocess is clickerProc, not scriptProc. Without this kill
+  // pressing Stop would leave the auto-clicker hammering away in the
+  // background after the workflow's "stopped" event already fired.
+  if (clickerProc) {
+    try { clickerProc.kill('SIGTERM') } catch (e) {}
+    clickerProc = null
+  }
 })
 
 // ── SCRIPTS: overwrite a script's JSON from the editor ──
@@ -1463,6 +1471,13 @@ ipcMain.handle('write-script', async (event, payload) => {
   }
 })
 
+// Preset (built-in) scripts that ship with WillettBot. The hub presents these
+// as first-class entry points (Send Gmail tile, Auto Clicker tile) and the
+// recorder seeds them on first launch. Deleting one would orphan the hub
+// tile and break the tour, so we lock them at the IPC layer too — defense
+// in depth alongside the UI hiding the Delete button.
+const PRESET_SCRIPTS = new Set(['send_gmail.json'])
+
 // ── SCRIPTS: delete a script ──
 ipcMain.handle('delete-script', async (event, filename) => {
   try {
@@ -1470,6 +1485,9 @@ ipcMain.handle('delete-script', async (event, filename) => {
     const safe = String(filename).trim()
     if (!/^[A-Za-z0-9_\-. ()]+$/.test(safe)) {
       return { ok: false, error: 'Unsafe filename.' }
+    }
+    if (PRESET_SCRIPTS.has(safe)) {
+      return { ok: false, error: 'This is a built-in preset and can\'t be deleted.' }
     }
     const full = path.join(SCRIPTS_DIR, safe)
     if (!fs.existsSync(full)) return { ok: false, error: 'Not found.' }
@@ -1970,21 +1988,57 @@ ipcMain.handle('save-workflow', async (event, payload) => {
   if (!Array.isArray(payload.steps) || !payload.steps.length) {
     return { ok: false, error: 'A workflow needs at least one step.' }
   }
-  // Each step must reference an existing script file. Catching this here
-  // instead of at run time means the user finds out about a missing script
-  // when they save the workflow, not three seconds into running it.
+  // Validate each step. A workflow step is either a "script" (references a
+  // saved scripts/<file>.json the runner will execute) or a "clicker" (an
+  // inline auto-clicker config the orchestrator passes straight to clicker.py).
+  // Catching this here means the user finds out about a missing script or a
+  // bogus clicker config when they save the workflow, not three seconds into
+  // running it.
   for (const s of payload.steps) {
-    if (!s || typeof s.script !== 'string' || !s.script) {
-      return { ok: false, error: 'Each step must reference a saved script.' }
-    }
-    if (!fs.existsSync(path.join(SCRIPTS_DIR, s.script))) {
-      return { ok: false, error: 'Script not found: ' + s.script }
+    if (!s) return { ok: false, error: 'Empty workflow step.' }
+    const kind = s.kind === 'clicker' ? 'clicker' : 'script'
+    if (kind === 'script') {
+      if (typeof s.script !== 'string' || !s.script) {
+        return { ok: false, error: 'Each script step must reference a saved script.' }
+      }
+      if (!fs.existsSync(path.join(SCRIPTS_DIR, s.script))) {
+        return { ok: false, error: 'Script not found: ' + s.script }
+      }
+    } else {
+      // Clicker step: x/y must be real coords (0,0 is the catch-the-fool case
+      // — the user almost certainly forgot to capture a position) and the
+      // interval has to be a positive number that won't overload the OS.
+      const x = Number(s.x), y = Number(s.y), interval = Number(s.interval)
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return { ok: false, error: 'Clicker step needs numeric x and y coordinates.' }
+      }
+      if (x === 0 && y === 0) {
+        return { ok: false, error: 'Clicker step is pinned to (0,0). Capture a real target position first.' }
+      }
+      if (!Number.isFinite(interval) || interval < 0.01) {
+        return { ok: false, error: 'Clicker step interval must be at least 0.01 seconds.' }
+      }
     }
   }
 
   const list = loadWorkflows()
   const now = new Date().toISOString()
-  const cleanSteps = payload.steps.map(s => ({ script: s.script }))
+  const cleanSteps = payload.steps.map(s => {
+    const kind = s.kind === 'clicker' ? 'clicker' : 'script'
+    if (kind === 'clicker') {
+      return {
+        kind:        'clicker',
+        x:           Number(s.x) | 0,
+        y:           Number(s.y) | 0,
+        interval:    Number(s.interval) || 1,
+        button:      (s.button === 'right' || s.button === 'middle') ? s.button : 'left',
+        doubleClick: !!s.doubleClick,
+        maxClicks:   Math.max(0, Number(s.maxClicks) | 0),
+        maxDuration: Math.max(0, Number(s.maxDuration) || 0),
+      }
+    }
+    return { kind: 'script', script: s.script }
+  })
   if (payload.id) {
     const i = list.findIndex(w => w.id === payload.id)
     if (i >= 0) {
@@ -2036,10 +2090,10 @@ ipcMain.handle('delete-workflow', async (event, id) => {
 let activeWorkflow = null
 
 function startWorkflow(wf, baseReply, pythonBin) {
-  if (activeWorkflow || scriptProc) {
+  if (activeWorkflow || scriptProc || clickerProc) {
     baseReply('script-event', {
       event: 'error',
-      message: 'Another script or workflow is already running. Stop it first.'
+      message: 'Another script, workflow, or auto-clicker is already running. Stop it first.'
     })
     return false
   }
@@ -2091,11 +2145,15 @@ function runNextWorkflowStep() {
   }
 
   const step = activeWorkflow.steps[activeWorkflow.idx]
+  const stepKind = step && step.kind === 'clicker' ? 'clicker' : 'script'
   activeWorkflow.reply('script-event', {
     event: 'workflow-step-start',
     index: activeWorkflow.idx,
     total: activeWorkflow.steps.length,
-    script: step.script
+    script: stepKind === 'clicker'
+      ? ('Auto-clicker @ (' + (step.x || 0) + ',' + (step.y || 0) + ')')
+      : step.script,
+    kind: stepKind
   })
 
   // Wrap the renderer reply so we can react to script terminal events
@@ -2123,13 +2181,128 @@ function runNextWorkflowStep() {
         event: 'workflow-stopped',
         reason: activeWorkflow.aborted ? 'user' : msg.event,
         atIndex: activeWorkflow.idx,
-        atScript: step.script
+        atScript: stepKind === 'clicker' ? null : step.script
       })
       activeWorkflow = null
     }
   }
 
-  startScriptProc(step.script, null, wrapped, activeWorkflow.pythonBin)
+  if (stepKind === 'clicker') {
+    startClickerStep(step, wrapped, activeWorkflow.pythonBin)
+  } else {
+    startScriptProc(step.script, null, wrapped, activeWorkflow.pythonBin)
+  }
+}
+
+// Run an auto-clicker step inside a workflow. Spawns clicker.py with the same
+// tmpfile-config protocol as the standalone clicker view, but translates its
+// stdout events into the script-event protocol the workflow orchestrator
+// expects (script-done / error / stopped). The wrapped reply is the
+// orchestrator's: forwarding events to the renderer AND advancing the
+// workflow on terminal events.
+function startClickerStep(step, reply, pythonBin) {
+  const py = pythonBin
+  if (clickerProc) {
+    try { clickerProc.kill('SIGTERM') } catch (e) {}
+    clickerProc = null
+  }
+  const config = {
+    x:           step.x || 0,
+    y:           step.y || 0,
+    interval:    step.interval || 1,
+    button:      step.button || 'left',
+    doubleClick: !!step.doubleClick,
+    maxClicks:   step.maxClicks || 0,
+    maxDuration: step.maxDuration || 0,
+    stopKey:     'esc',
+  }
+  // Workflow clicker steps MUST have a stop condition — otherwise the
+  // workflow would hang forever waiting for the user to press Esc, which is
+  // surprising in a "run all my saved steps" flow. If the user didn't set
+  // one, default to 50 clicks so the workflow at least makes progress.
+  if (!config.maxClicks && !config.maxDuration) {
+    config.maxClicks = 50
+    reply('script-event', {
+      event: 'log',
+      message: 'Auto-clicker step had no limit — defaulting to 50 clicks so the workflow can advance.'
+    })
+  }
+  const tmpFile = path.join(os.tmpdir(), 'willettbot_workflow_clicker.json')
+  fs.writeFileSync(tmpFile, JSON.stringify(config), 'utf8')
+
+  reply('script-event', {
+    event: 'step',
+    message: '▶ Auto-clicker @ (' + config.x + ',' + config.y + ') every ' +
+             config.interval + 's, stop after ' +
+             (config.maxClicks ? config.maxClicks + ' clicks'
+                               : config.maxDuration + 's')
+  })
+
+  clickerProc = spawn(py, [path.join(PY_DIR, 'clicker.py'), tmpFile])
+  installStopHotkey()
+
+  let stdoutBuf = ''
+  let stderrBuf = ''
+  let sawTerminalEvent = false
+
+  clickerProc.stdout.on('data', (chunk) => {
+    stdoutBuf += chunk.toString()
+    let nl
+    while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
+      const line = stdoutBuf.slice(0, nl).trim()
+      stdoutBuf = stdoutBuf.slice(nl + 1)
+      if (!line) continue
+      let evt
+      try { evt = JSON.parse(line) } catch (e) { continue }
+      if (evt.event === 'click') {
+        // Light progress indicator — every 10th click logs to keep the
+        // workflow log readable. Real-time tick events go to the standalone
+        // clicker view but workflows don't need that fidelity.
+        if (evt.count && evt.count % 10 === 0) {
+          reply('script-event', { event: 'log',
+            message: '  ' + evt.count + ' clicks…' })
+        }
+      } else if (evt.event === 'done') {
+        sawTerminalEvent = true
+        reply('script-event', { event: 'log',
+          message: '✓ Auto-clicker finished (' + (evt.count || 0) + ' clicks).' })
+        reply('script-event', { event: 'script-done' })
+      } else if (evt.event === 'failsafe' || evt.event === 'stopped') {
+        sawTerminalEvent = true
+        reply('script-event', { event: 'stopped',
+          message: 'Auto-clicker stopped at ' + (evt.count || 0) + ' clicks.' })
+      } else if (evt.event === 'warning') {
+        reply('script-event', { event: 'log', message: '⚠ ' + (evt.message || 'warning') })
+      } else if (evt.event === 'error') {
+        sawTerminalEvent = true
+        reply('script-event', { event: 'error',
+          message: 'Auto-clicker error: ' + (evt.message || 'unknown') })
+      }
+    }
+  })
+
+  clickerProc.stderr.on('data', (chunk) => {
+    stderrBuf += chunk.toString()
+    console.error('[workflow-clicker]', chunk.toString())
+  })
+
+  clickerProc.on('close', (code) => {
+    clickerProc = null
+    if (!scriptProc && !recorderProc) uninstallStopHotkey()
+    if (!sawTerminalEvent) {
+      const trimmedErr = stderrBuf.trim()
+      const reason = trimmedErr
+        ? ('Python error: ' + trimmedErr.split('\n').pop())
+        : ('exited with code ' + code)
+      reply('script-event', { event: 'error', message: 'Auto-clicker: ' + reason })
+    }
+  })
+
+  clickerProc.on('error', (err) => {
+    clickerProc = null
+    reply('script-event', { event: 'error',
+      message: 'Auto-clicker: failed to start python3 — ' + err.message })
+  })
 }
 
 ipcMain.on('run-workflow', async (event, payload) => {

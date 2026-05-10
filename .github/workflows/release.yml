@@ -42,7 +42,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rosetta 2
         # Our DMG target is x64 and prepare-python.sh downloads x86_64-apple-darwin Python.
@@ -50,14 +50,14 @@ jobs:
         # during the build (specifically: the bundled python3 invoking pip).
         run: softwareupdate --install-rosetta --agree-to-license
 
-      - name: Setup Node 20
-        uses: actions/setup-node@v4
+      - name: Setup Node 22
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       - name: Cache bundled Python
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: bundled-python
           key: bundled-python-mac-${{ hashFiles('scripts-build/prepare-python.sh') }}
@@ -103,16 +103,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: Setup Node 20
-        uses: actions/setup-node@v4
+      - name: Setup Node 22
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       - name: Cache bundled Python
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: bundled-python
           key: bundled-python-win-${{ hashFiles('scripts-build/prepare-python.ps1') }}

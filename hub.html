@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!--
-  Copyright (c) 2026 Myles Willett. All rights reserved.
+  Copyright (c) 2026 WillettBot Inc. All rights reserved.
   Proprietary and confidential. No reproduction, distribution, or use
   without express written permission.
 -->
@@ -1389,14 +1389,14 @@
            and findable for anyone who looks, doesn't compete with the main
            dashboard for attention. -->
       <div style="margin-top:48px;padding:24px 0 16px;border-top:1px solid rgba(255,255,255,0.06);text-align:center;font-size:11px;color:var(--text3);line-height:1.6">
-        WillettBot · Copyright © 2026 Myles Willett ·
+        WillettBot · Copyright © 2026 WillettBot Inc. ·
         <a href="#" onclick="event.preventDefault(); openLegalDoc('privacy')" style="color:var(--text2);text-decoration:underline">Privacy</a>
         ·
         <a href="#" onclick="event.preventDefault(); openLegalDoc('terms')" style="color:var(--text2);text-decoration:underline">Terms</a>
         ·
         <a href="#" onclick="event.preventDefault(); openLegalDoc('notices')" style="color:var(--text2);text-decoration:underline">Notices</a>
         ·
-        <a href="#" onclick="event.preventDefault(); _openExternal('mailto:mwillettwork@gmail.com')" style="color:var(--text2);text-decoration:underline">Contact</a>
+        <a href="#" onclick="event.preventDefault(); _openExternal('mailto:support@willettbot.com')" style="color:var(--text2);text-decoration:underline">Support</a>
       </div>
     </main>
   </div>
@@ -1545,10 +1545,10 @@
             <div class="field">
               <label>End hotkey</label>
               <select id="record-end-hotkey">
-                <option value="f10" selected>F10</option>
+                <option value="esc" selected>Esc</option>
+                <option value="f10">F10</option>
                 <option value="f11">F11</option>
                 <option value="f12">F12</option>
-                <option value="esc">Esc</option>
                 <option value="return">Return / Enter</option>
                 <option value="shift">Shift</option>
               </select>
@@ -1699,8 +1699,9 @@
     <div id="edit-script-error" style="display:none;color:var(--red);font-size:12px;margin-top:10px;font-family:'DM Mono',monospace"></div>
 
     <div class="modal-actions" style="margin-top:16px">
-      <button class="modal-btn" style="background:rgba(224,82,82,0.1);border-color:rgba(224,82,82,0.3);color:var(--red)" onclick="deleteScriptFromEditor()">Delete</button>
-      <div style="flex:1"></div>
+      <button id="edit-script-delete-btn" class="modal-btn" style="background:rgba(224,82,82,0.1);border-color:rgba(224,82,82,0.3);color:var(--red)" onclick="deleteScriptFromEditor()">Delete</button>
+      <div id="edit-script-preset-note" style="flex:1;font-size:12px;color:var(--text3);align-self:center;display:none">Built-in preset — saving edits is fine, but the file can't be deleted.</div>
+      <div id="edit-script-spacer" style="flex:1"></div>
       <button class="modal-btn" onclick="cancelEditScript()">Cancel</button>
       <button class="modal-btn primary" onclick="saveEditScript()">Save</button>
     </div>
@@ -1742,7 +1743,7 @@
     <div class="modal-subtitle">Build a workflow</div>
     <div class="modal-title" id="workflow-modal-title">New workflow</div>
     <div class="modal-body" style="font-size:12px;color:var(--text2);margin-bottom:12px">
-      A workflow runs your saved scripts in order. Each script runs separately, so any prompts, manual-input steps, errors, or stops behave the same way they do when you run the script on its own.
+      A workflow runs your steps in order — saved scripts and auto-clicker targets, mixed however you like. Each step runs separately, so any prompts, manual-input steps, errors, or stops behave the same way they do when you run the step on its own.
     </div>
     <div class="field">
       <label>Name</label>
@@ -1754,7 +1755,10 @@
     </div>
     <div class="section-label" style="margin:12px 0 8px">Steps (run in order)</div>
     <div id="workflow-steps-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px"></div>
-    <button class="modal-btn" onclick="addWorkflowStep()" style="font-size:12px;padding:6px 12px">+ Add step</button>
+    <div style="display:flex;gap:8px">
+      <button class="modal-btn" onclick="addWorkflowStep('script')" style="font-size:12px;padding:6px 12px">+ Add script</button>
+      <button class="modal-btn" onclick="addWorkflowStep('clicker')" style="font-size:12px;padding:6px 12px">+ Add auto-clicker</button>
+    </div>
     <div id="workflow-error" style="display:none;color:var(--red);font-size:12px;margin-top:10px;font-family:'DM Mono',monospace"></div>
     <div class="modal-actions" style="margin-top:16px">
       <button class="modal-btn" id="workflow-delete-btn" style="background:rgba(224,82,82,0.1);border-color:rgba(224,82,82,0.3);color:var(--red);display:none" onclick="deleteCurrentWorkflow()">Delete</button>
@@ -1879,9 +1883,31 @@
   try { ipcRenderer = require('electron').ipcRenderer } catch(e) {}
 
   // ── VIEW ROUTING ──
+  // Map of view id → human-readable suffix appended to the window title.
+  // The recorder captures `window_title` on every click; differentiating
+  // titles per view turns that field into a real signal for the runner —
+  // it can warn when the replay-time view doesn't match what was recorded
+  // (instead of silently firing the click on whatever element happens to
+  // sit at the recorded coords). Keep names short — they show up in the
+  // OS window-title bar.
+  var _VIEW_TITLES = {
+    'view-splash':   'Welcome',
+    'view-hub':      'Hub',
+    'view-clicker':  'Clicker',
+    'view-builder':  'Builder',
+    'view-signin':   'Sign in',
+    'view-inactive': 'Subscription',
+  }
+
   function showView(id) {
     document.querySelectorAll('.view').forEach(function(v) { v.classList.remove('active') })
     document.getElementById(id).classList.add('active')
+    // Update the document/window title so the recorder's window_title field
+    // reflects which WillettBot view a click happened on.
+    try {
+      var suffix = _VIEW_TITLES[id]
+      document.title = suffix ? ('WillettBot — ' + suffix) : 'WillettBot'
+    } catch (_e) { /* never let a title update break navigation */ }
   }
 
   // ── ACTIVATION ──
@@ -2626,6 +2652,14 @@
   }
 
   function startClicker() {
+    // Same self-interference guard as startRecording — a replaying script
+    // whose recorded coords drifted onto the auto-clicker Start button
+    // shouldn't kick off a runaway clicker on top of the running script.
+    if (typeof _isScriptRunning === 'function' && _isScriptRunning()) {
+      appendLog('warn', '⚠ Refused to start the auto-clicker — a script is '
+                       + 'currently replaying. Stop it first.')
+      return
+    }
     var xRaw = document.getElementById('clk-x').value
     var yRaw = document.getElementById('clk-y').value
     var intervalRaw = document.getElementById('clk-interval').value
@@ -3018,6 +3052,13 @@
   var _editingMode     = 'simple'
   var _dragSourceIndex = null
 
+  // Built-in preset scripts. The hub tiles (Send Gmail, Auto Clicker) and the
+  // tour reference these by filename, so deleting one would break first-run
+  // experience. Mirrored in main.js (PRESET_SCRIPTS) where the IPC delete
+  // handler also rejects them — UI hides Delete, backend refuses Delete,
+  // either layer alone catches it.
+  var _PRESET_SCRIPTS = ['send_gmail.json']
+
   // Per-action-type display metadata for the block flow.
   // icon: short glyph shown in the left badge.
   // klass: color scheme class on the icon badge.
@@ -3161,6 +3202,17 @@
     _editingFilename = filename
     document.getElementById('edit-script-title').textContent = filename
     clearEditError()
+    // Hide the Delete button for built-in presets — these get re-seeded on
+    // launch and the hub tiles point straight at them, so removal would
+    // orphan the UI. main.js's delete-script handler also rejects these as
+    // a defense-in-depth check.
+    var _isPreset = _PRESET_SCRIPTS.indexOf(filename) !== -1
+    var _delBtn = document.getElementById('edit-script-delete-btn')
+    var _presetNote = document.getElementById('edit-script-preset-note')
+    var _spacer = document.getElementById('edit-script-spacer')
+    if (_delBtn)     _delBtn.style.display     = _isPreset ? 'none' : ''
+    if (_presetNote) _presetNote.style.display = _isPreset ? 'block' : 'none'
+    if (_spacer)     _spacer.style.display     = _isPreset ? 'none' : ''
 
     var parsed = null
     try { parsed = JSON.parse(resp.content) } catch (e) { parsed = null }
@@ -3651,6 +3703,17 @@
     openScriptVarsModal(filename, meta, vars, keys)
   }
 
+  // Single source of truth for "is a script currently replaying?". We use the
+  // Stop button's visibility as the proxy because it's already toggled in
+  // every code path that starts/ends a run (and a workflow's chained runs).
+  // Used by self-interference guards on UI controls that — if accidentally
+  // fired by a replayed click whose coords drifted — would trigger a
+  // recursive recording or a runaway clicker on top of the script.
+  function _isScriptRunning() {
+    var b = document.getElementById('script-stop-btn')
+    return !!(b && b.style && b.style.display && b.style.display !== 'none')
+  }
+
   function _startScript(filename, variables) {
     clearLog()
     appendLog('step', '▶ Starting ' + filename)
@@ -3910,7 +3973,7 @@
     var list = document.getElementById('workflows-list')
     if (!list) return
     if (!_workflowsCache.length) {
-      list.innerHTML = '<div class="empty-activity">No workflows yet. Click <strong>+ New workflow</strong> to chain saved scripts together.</div>'
+      list.innerHTML = '<div class="empty-activity">No workflows yet. Click <strong>+ New workflow</strong> to chain scripts and auto-clicker steps together.</div>'
       return
     }
     list.innerHTML = _workflowsCache.map(function(wf) {
@@ -3974,6 +4037,12 @@
 
   // ── EDITOR: step list ──
 
+  // Returns the step's effective kind. Older workflows on disk don't carry
+  // the kind field — those are always script steps, so default accordingly.
+  function _stepKind(step) {
+    return (step && step.kind === 'clicker') ? 'clicker' : 'script'
+  }
+
   function renderWorkflowEditorSteps() {
     var list = document.getElementById('workflow-steps-list')
     if (!_editingWorkflow) return
@@ -3981,29 +4050,105 @@
     list.innerHTML = ''
     _editingWorkflow.steps.forEach(function(step, idx) {
       var row = document.createElement('div')
-      row.style.cssText = 'display:flex;gap:6px;align-items:center;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 10px'
+      row.style.cssText = 'display:flex;gap:6px;align-items:center;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 10px;flex-wrap:wrap'
 
       var num = document.createElement('span')
       num.style.cssText = 'color:var(--text3);font-size:12px;width:18px;text-align:right;font-family:DM Mono,monospace'
       num.textContent = (idx + 1) + '.'
       row.appendChild(num)
 
-      var sel = document.createElement('select')
-      sel.style.cssText = 'flex:1;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px'
-      var blank = document.createElement('option')
-      blank.value = ''; blank.textContent = '— pick a script —'
-      sel.appendChild(blank)
-      scripts.forEach(function(s) {
-        var o = document.createElement('option')
-        o.value = s.filename
-        o.textContent = (s.name && s.name !== s.filename) ? (s.name + '  (' + s.filename + ')') : s.filename
-        if (s.filename === step.script) o.selected = true
-        sel.appendChild(o)
-      })
-      sel.addEventListener('change', function() {
-        _editingWorkflow.steps[idx].script = sel.value
-      })
-      row.appendChild(sel)
+      var kind = _stepKind(step)
+
+      if (kind === 'clicker') {
+        // Auto-clicker step. Inline x/y/interval/limit fields — much less
+        // friction than asking the user to save a clicker config as a
+        // script first. The workflow orchestrator spawns clicker.py for
+        // these directly using the same tmpfile-config path the standalone
+        // Auto Clicker view uses.
+        var tag = document.createElement('span')
+        tag.style.cssText = 'font-size:11px;color:var(--accent);background:rgba(124,106,255,0.12);border:1px solid rgba(124,106,255,0.35);border-radius:4px;padding:2px 7px;letter-spacing:0.5px;text-transform:uppercase'
+        tag.textContent = 'Clicker'
+        row.appendChild(tag)
+
+        function mkNumberField(label, val, width, key, parser) {
+          var wrap = document.createElement('label')
+          wrap.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text2)'
+          wrap.appendChild(document.createTextNode(label))
+          var inp = document.createElement('input')
+          inp.type = 'number'
+          inp.value = (val == null ? '' : String(val))
+          inp.style.cssText = 'width:' + width + 'px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 6px;font-size:12px'
+          inp.addEventListener('input', function() {
+            var v = parser(inp.value)
+            _editingWorkflow.steps[idx][key] = isNaN(v) ? 0 : v
+          })
+          wrap.appendChild(inp)
+          return wrap
+        }
+        row.appendChild(mkNumberField('x',  step.x,  64,  'x', function(s) { return parseInt(s, 10) }))
+        row.appendChild(mkNumberField('y',  step.y,  64,  'y', function(s) { return parseInt(s, 10) }))
+        row.appendChild(mkNumberField('every (s)',  step.interval || 1, 64, 'interval', function(s) { return parseFloat(s) }))
+
+        // Limit picker: count or duration. Stored as either maxClicks (int)
+        // or maxDuration (seconds). Mirror the standalone clicker UI.
+        var limitWrap = document.createElement('label')
+        limitWrap.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text2)'
+        limitWrap.appendChild(document.createTextNode('stop after'))
+        var limitVal = document.createElement('input')
+        limitVal.type = 'number'
+        var presetVal = (step.maxClicks || 0) > 0 ? step.maxClicks
+                       : (step.maxDuration || 0) > 0 ? step.maxDuration : ''
+        limitVal.value = presetVal
+        limitVal.placeholder = '∞'
+        limitVal.style.cssText = 'width:60px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 6px;font-size:12px'
+        var limitUnit = document.createElement('select')
+        limitUnit.style.cssText = 'background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 6px;font-size:12px'
+        var optClicks = document.createElement('option'); optClicks.value = 'clicks';  optClicks.textContent  = 'clicks'
+        var optSec    = document.createElement('option'); optSec.value    = 'seconds'; optSec.textContent     = 'seconds'
+        limitUnit.appendChild(optClicks); limitUnit.appendChild(optSec)
+        limitUnit.value = (step.maxDuration || 0) > 0 ? 'seconds' : 'clicks'
+        function _syncLimit() {
+          var v = parseFloat(limitVal.value)
+          if (isNaN(v) || v <= 0) {
+            _editingWorkflow.steps[idx].maxClicks   = 0
+            _editingWorkflow.steps[idx].maxDuration = 0
+            return
+          }
+          if (limitUnit.value === 'clicks') {
+            _editingWorkflow.steps[idx].maxClicks   = Math.floor(v)
+            _editingWorkflow.steps[idx].maxDuration = 0
+          } else {
+            _editingWorkflow.steps[idx].maxClicks   = 0
+            _editingWorkflow.steps[idx].maxDuration = v
+          }
+        }
+        limitVal.addEventListener('input',  _syncLimit)
+        limitUnit.addEventListener('change', _syncLimit)
+        limitWrap.appendChild(limitVal); limitWrap.appendChild(limitUnit)
+        row.appendChild(limitWrap)
+      } else {
+        var tag = document.createElement('span')
+        tag.style.cssText = 'font-size:11px;color:var(--text3);background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:4px;padding:2px 7px;letter-spacing:0.5px;text-transform:uppercase'
+        tag.textContent = 'Script'
+        row.appendChild(tag)
+
+        var sel = document.createElement('select')
+        sel.style.cssText = 'flex:1;min-width:180px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px'
+        var blank = document.createElement('option')
+        blank.value = ''; blank.textContent = '— pick a script —'
+        sel.appendChild(blank)
+        scripts.forEach(function(s) {
+          var o = document.createElement('option')
+          o.value = s.filename
+          o.textContent = (s.name && s.name !== s.filename) ? (s.name + '  (' + s.filename + ')') : s.filename
+          if (s.filename === step.script) o.selected = true
+          sel.appendChild(o)
+        })
+        sel.addEventListener('change', function() {
+          _editingWorkflow.steps[idx].script = sel.value
+        })
+        row.appendChild(sel)
+      }
 
       function mkBtn(label, dis, onClick) {
         var b = document.createElement('button')
@@ -4023,9 +4168,21 @@
     })
   }
 
-  function addWorkflowStep() {
+  function addWorkflowStep(kind) {
     if (!_editingWorkflow) return
-    _editingWorkflow.steps.push({ script: '' })
+    if (kind === 'clicker') {
+      _editingWorkflow.steps.push({
+        kind: 'clicker',
+        x: 0, y: 0,
+        interval: 1.0,
+        button: 'left',
+        doubleClick: false,
+        maxClicks: 0,
+        maxDuration: 0,
+      })
+    } else {
+      _editingWorkflow.steps.push({ kind: 'script', script: '' })
+    }
     renderWorkflowEditorSteps()
   }
 
@@ -4062,9 +4219,18 @@
       err.style.display = 'block'
       return
     }
-    var steps = _editingWorkflow.steps.filter(function(s) { return s && s.script })
+    // Drop empty steps. A step is "empty" if it's a script step without a
+    // chosen script, or a clicker step that's still pinned to (0,0). The
+    // backend validates the kept ones more strictly.
+    var steps = _editingWorkflow.steps.filter(function(s) {
+      if (!s) return false
+      if (_stepKind(s) === 'clicker') {
+        return (s.x || 0) !== 0 || (s.y || 0) !== 0
+      }
+      return !!s.script
+    })
     if (!steps.length) {
-      err.textContent = 'Pick at least one script for this workflow.'
+      err.textContent = 'Add at least one step (a script, or an auto-clicker target) for this workflow.'
       err.style.display = 'block'
       return
     }
@@ -4312,10 +4478,19 @@
       if (!p) return ''
       return String(p).length > 48 ? '…' + String(p).slice(-46) : String(p)
     }
+    // Prefix "right-" / "middle-" when the recorded button isn't the default
+    // left. The captured JSON has always carried `button`; this just surfaces
+    // it so users can confirm at a glance that their right-clicks landed.
+    function btnPrefix(a) {
+      var b = a && a.button
+      if (b === 'right')  return 'right-'
+      if (b === 'middle') return 'middle-'
+      return ''
+    }
     switch (a.action) {
-      case 'click':        return 'click (' + a.x + ',' + a.y + ')'
-      case 'double_click': return 'double-click (' + a.x + ',' + a.y + ')'
-      case 'drag':         return 'drag (' + a.fromX + ',' + a.fromY + ') → (' + a.toX + ',' + a.toY + ')'
+      case 'click':        return btnPrefix(a) + 'click (' + a.x + ',' + a.y + ')'
+      case 'double_click': return btnPrefix(a) + 'double-click (' + a.x + ',' + a.y + ')'
+      case 'drag':         return btnPrefix(a) + 'drag (' + a.fromX + ',' + a.fromY + ') → (' + a.toX + ',' + a.toY + ')'
       case 'move_to':      return 'move to (' + a.x + ',' + a.y + ')'
       case 'char':         return 'type "' + a.char + '"'
       case 'type':         return 'type "' + (a.text || '').slice(0, 20) + '"'
@@ -4345,6 +4520,22 @@
 
   function startRecording() {
     if (!ipcRenderer) return
+    // Self-interference guard. If a script is currently REPLAYING, refuse to
+    // start a recording — the only way startRecording fires here is a
+    // recorded click whose (x,y) drifted onto the Start-recording button
+    // (because the WillettBot view at replay time is different from when the
+    // click was recorded). Without this guard the recursive recording is
+    // exactly what users see when they replay a script that touches
+    // WillettBot's own UI.
+    if (_isScriptRunning()) {
+      appendLog('warn', '⚠ Refused to start recording — a script is currently '
+                       + 'replaying. The click that landed here was probably '
+                       + 'meant for a different button (the recorded '
+                       + 'coordinates drifted onto the Start-recording button '
+                       + 'because the visible view changed). Stop the script '
+                       + 'first if you actually want to record.')
+      return
+    }
     var startKey = document.getElementById('record-start-hotkey').value
     var endKey   = document.getElementById('record-end-hotkey').value
     if (startKey === endKey) {
@@ -4783,7 +4974,7 @@
     {
       icon: '🧱',
       title: 'Script Builder: record your own',
-      body: "For anything else, use the <b>Script Builder</b>. Click <b>Record</b>, do the thing once — click the buttons, type the text, open the files, whatever — then press <b>F10</b> to stop. WillettBot saves it as a reusable script you can replay anytime, and you can edit individual steps afterward too."
+      body: "For anything else, use the <b>Script Builder</b>. Click <b>Record</b>, do the thing once — click the buttons, type the text, open the files, whatever — then press <b>Esc</b> to stop. WillettBot saves it as a reusable script you can replay anytime, and you can edit individual steps afterward too."
     },
     {
       icon: '⭐',
@@ -4793,7 +4984,7 @@
     {
       icon: '🚀',
       title: "You're ready",
-      body: "That's the whole tour. Try clicking <b>Send Gmail</b> on the hub to see an automation in action, or jump into <b>Script Builder</b> and record something. You can replay this tour anytime using the <b>tour</b> link in the top-right. Tell Myles what's broken."
+      body: "That's the whole tour. Try clicking <b>Send Gmail</b> on the hub to see an automation in action, or jump into <b>Script Builder</b> and record something. You can replay this tour anytime using the <b>tour</b> link in the top-right. If something breaks, reach out via the <b>Contact</b> link in the footer."
     }
   ]
 

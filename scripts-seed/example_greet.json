@@ -2,7 +2,7 @@
   "name": "Greet by name",
   "description": "Cross-platform starter script. Opens your OS's default text editor (TextEdit on Mac, Notepad on Windows), forces a new blank document, and types a greeting.",
   "variables": {
-    "name": "Myles"
+    "name": "Friend"
   },
   "actions": [
     { "action": "say",          "message": "Starting greet script for {{name}}" },

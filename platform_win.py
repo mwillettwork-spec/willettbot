@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Myles Willett. All rights reserved.
+# Copyright (c) 2026 WillettBot Inc. All rights reserved.
 # Proprietary and confidential. No reproduction, distribution, or use
 # without express written permission.
 

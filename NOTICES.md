@@ -13,9 +13,7 @@ fulfillment of those licenses' attribution and notice requirements.
 If you have questions about anything below, contact:
 
 **WillettBot Inc.**
-66 Ulster Ave
-Atlantic Beach, NY 11509
-**mwillettwork@gmail.com**
+**support@willettbot.com**
 
 ---
 

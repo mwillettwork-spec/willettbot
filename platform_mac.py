@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Myles Willett. All rights reserved.
+# Copyright (c) 2026 WillettBot Inc. All rights reserved.
 # Proprietary and confidential. No reproduction, distribution, or use
 # without express written permission.
 
@@ -444,9 +444,36 @@ def run_native_script(script, timeout=30.0):
 
 
 def get_real_modifier_state():
-    """Stub on macOS: pynput on macOS is reliable about modifier state, so we
-    don't need to second-guess it. The cross-platform recorder calls this
-    every key press; returning None means 'no override, trust active_modifiers
-    as-is.' (Returning an empty set here would FORCE-CLEAR active_modifiers
-    every press, which is wrong on Mac.)"""
-    return None
+    """Return the set of modifier names ('command' / 'shift' / 'ctrl' / 'alt')
+    the OS believes are physically held RIGHT NOW, or None if Quartz isn't
+    available (rare — pyobjc ships with our bundled Python).
+
+    Used by the recorder for two purposes:
+      1) Removing stale modifiers — pynput sometimes misses a Cmd-release if
+         focus changed mid-keystroke; without this probe the next plain
+         letter press would be misclassified as a Cmd+letter hotkey.
+      2) Healing missed modifier presses — the macOS keyboard layout
+         transform suppresses key.char for Cmd+letter combos, and the
+         pynput modifier-press callback sometimes lands AFTER the letter
+         callback (different OS thread). When the recorder sees a letter
+         arrive with char=None and active_modifiers empty, it can probe
+         here to find the modifier that's actually held.
+
+    Implementation: Quartz CGEventSourceFlagsState reads the kernel's HID
+    state directly — sub-millisecond, no AppleScript, no race window."""
+    try:
+        import Quartz
+    except Exception:
+        return None
+    try:
+        flags = Quartz.CGEventSourceFlagsState(
+            Quartz.kCGEventSourceStateHIDSystemState
+        )
+    except Exception:
+        return None
+    real = set()
+    if flags & Quartz.kCGEventFlagMaskCommand:   real.add('command')
+    if flags & Quartz.kCGEventFlagMaskShift:     real.add('shift')
+    if flags & Quartz.kCGEventFlagMaskControl:   real.add('ctrl')
+    if flags & Quartz.kCGEventFlagMaskAlternate: real.add('alt')
+    return real

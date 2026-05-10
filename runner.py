@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Myles Willett. All rights reserved.
+# Copyright (c) 2026 WillettBot Inc. All rights reserved.
 # Proprietary and confidential. No reproduction, distribution, or use
 # without express written permission.
 
@@ -206,6 +206,63 @@ def substitute(value, variables):
 # on Linux) lives in platform_helpers / platform_<os>.py. This file just
 # orchestrates the steps.
 
+def _replay_hotkey(keys):
+    """Replay a hotkey combo. On macOS we hold the modifiers explicitly via
+    pynput's Controller and sleep ~50 ms before pressing the final key —
+    pyautogui.hotkey posts events too tightly for Chrome's menu key-equivalent
+    dispatcher to recognize Cmd+T (and similar). On Windows / Linux we fall
+    back to pyautogui.hotkey, which works fine there.
+
+    Sequence on Mac: press all modifiers → 50 ms hold so the OS sees the
+    modifier flag set → press+release the final key → 20 ms tail → release
+    modifiers in reverse order. Total added latency is ~70 ms per hotkey,
+    which is invisible at human-perception scale and fixes Cmd+T on Chrome /
+    Cmd+Q / Cmd+Tab / etc.
+
+    `keys` is the list shape recorder.py emits — sorted modifier names first,
+    then the final non-modifier key name as the last element.
+    """
+    if not keys:
+        return
+    if not platform.is_mac() or len(keys) < 2:
+        # Non-Mac, or a degenerate single-key "hotkey" — pyautogui handles both.
+        pyautogui.hotkey(*keys)
+        return
+    try:
+        from pynput.keyboard import Controller, Key
+    except Exception:
+        pyautogui.hotkey(*keys); return
+    name_to_key = {
+        'command': Key.cmd,  'cmd':    Key.cmd,
+        'shift':   Key.shift,
+        'ctrl':    Key.ctrl, 'control': Key.ctrl,
+        'alt':     Key.alt,  'option': Key.alt,
+    }
+    mod_names = keys[:-1]
+    final = keys[-1]
+    mods = [name_to_key[m] for m in mod_names if m in name_to_key]
+    if len(mods) != len(mod_names):
+        # Unknown modifier name → fall back rather than half-press.
+        pyautogui.hotkey(*keys); return
+    kb = Controller()
+    try:
+        for m in mods:
+            kb.press(m)
+        time.sleep(0.05)              # let modifiers register before final
+        try:
+            kb.press(final)
+            kb.release(final)
+        except Exception:
+            # pynput is occasionally picky about character literals (e.g. it
+            # wants Key.enter rather than 'enter'). Fall back gracefully.
+            pyautogui.press(final)
+        time.sleep(0.02)
+    finally:
+        for m in reversed(mods):
+            try: kb.release(m)
+            except Exception: pass
+
+
 def _ensure_frontmost_app(action):
     """Refocus the expected app (and, if we have it, the expected window)
     before a click. Silent no-op if no hint on the action — or if the
@@ -254,6 +311,33 @@ def _ensure_frontmost_app(action):
             emit({'event': 'log',
                   'message': 'Raised window "' + expected_title[:48] + '"'})
             time.sleep(0.12)
+        else:
+            # When the target is WillettBot itself ("Electron" in dev mode,
+            # "WillettBot" signed) AND the current window title doesn't match
+            # what was recorded, surface that as a warning — pixel coords on
+            # WillettBot's own UI only line up when the same view is showing.
+            # The user can fix it by navigating to the right view before
+            # replaying, or by re-recording from a consistent starting view.
+            # We warn rather than abort so other-app replays where titles
+            # legitimately drift (e.g. Chrome tab titles change page-to-page)
+            # aren't punished.
+            try:
+                is_self = expected in ('Electron', 'WillettBot')
+            except Exception:
+                is_self = False
+            if is_self:
+                try:
+                    cur_title = platform.get_frontmost_window_title() or ''
+                except Exception:
+                    cur_title = ''
+                if cur_title and cur_title != expected_title:
+                    emit({'event': 'log',
+                          'message': '⚠ WillettBot view mismatch — recorded '
+                                     'click expected window "' + expected_title[:60] + '" '
+                                     'but current window is "' + cur_title[:60] + '". '
+                                     'Click coords were captured against a '
+                                     'different view; the click may land on '
+                                     'the wrong UI element.'})
 
 
 def _translate_click(action, x, y):
@@ -481,7 +565,13 @@ def run_action(action, variables):
         keys = action.get('keys', [])
         if not keys:
             raise ValueError('hotkey action needs a "keys" array')
-        pyautogui.hotkey(*keys)
+        # Refocus the recorded app FIRST. Without this, Cmd+T recorded against
+        # Chrome would replay against whatever's currently frontmost — usually
+        # WillettBot's own hub right after clicking Run, and the new-tab combo
+        # silently no-ops. _ensure_frontmost_app uses the (app, window_title)
+        # the recorder stamped via _attach_app at record time.
+        _ensure_frontmost_app(action)
+        _replay_hotkey(keys)
 
     elif kind == 'scroll':
         # Vertical scroll replay. Sign convention matches pynput / pyautogui:
@@ -517,35 +607,83 @@ def run_action(action, variables):
                 if x is not None and y is not None:
                     pyautogui.moveTo(int(x), int(y), duration=0)
 
-                # Convert recorder units into pyautogui ticks. Empirical
-                # scale, tuned by hand: pynput delivers scrollingDeltaY in
-                # fractional line units, and pyautogui.scroll wants whole-
-                # line ticks. A ~3.5x divisor is the closest match overall;
-                # asymmetric per-direction divisors got worse, not better.
-                if platform.is_mac():
-                    ticks = int(raw / 3.5)
-                else:
-                    ticks = raw
-                # Always preserve direction even if scaling rounded to zero.
-                if ticks == 0:
-                    ticks = -1 if raw < 0 else 1
-
-                # Pace the chunks across the recorded duration so replay
-                # speed matches the original gesture. 3-tick chunks (vs
-                # 1-tick) keep the per-OS-call overhead from inflating the
-                # total replay time past the user's recorded duration.
                 duration_s = max(0.0, int(action.get('duration_ms', 250)) / 1000.0)
-                step = 3 if ticks > 0 else -3
-                remaining = ticks
-                n_chunks = (abs(ticks) + abs(step) - 1) // abs(step)
-                gap_s = (duration_s / n_chunks) if n_chunks > 0 else 0.0
 
-                for i in range(n_chunks):
-                    chunk = step if abs(remaining) >= abs(step) else remaining
-                    pyautogui.scroll(chunk)
-                    remaining -= chunk
-                    if i < n_chunks - 1 and gap_s > 0:
-                        time.sleep(gap_s)
+                if platform.is_mac():
+                    # macOS: post Quartz scroll wheel events with PIXEL units
+                    # (kCGScrollEventUnitPixel) instead of pyautogui's line-
+                    # based events. Pixel events match what the recorder
+                    # captured (pynput hands us line-units that map almost
+                    # 1:1 to ~10 device pixels at default trackpad settings),
+                    # so playback distance matches the original gesture much
+                    # more closely than the old `int(raw/3.5)` line-tick path.
+                    # We pace across the recorded duration at ~60 Hz so the
+                    # gesture replays at recorder-time speed instead of
+                    # snapping all at once.
+                    SCROLL_PX_PER_UNIT = 10  # tunable; matches default Mac
+                                             # trackpad "line" → pixel mapping
+                    pixels = int(raw * SCROLL_PX_PER_UNIT)
+                    if pixels == 0:
+                        pixels = -1 if raw < 0 else 1
+                    n_steps = max(1, int(round(duration_s / 0.016)) or 1)
+                    if n_steps > abs(pixels):
+                        # Don't divide finer than 1 px per step — that just
+                        # spends sleep time on no-op events.
+                        n_steps = max(1, abs(pixels))
+                    per_step = pixels / n_steps
+                    gap_s = duration_s / n_steps if duration_s > 0 else 0.0
+                    accum = 0.0
+                    posted = 0
+                    try:
+                        import Quartz  # type: ignore
+                    except Exception:
+                        Quartz = None
+                    if Quartz is None:
+                        # pyobjc not available — fall back to the line-event
+                        # path so we still scroll *something* sensible.
+                        pyautogui.scroll(int(raw / 3.5) or (-1 if raw < 0 else 1))
+                    else:
+                        for i in range(n_steps):
+                            accum += per_step
+                            chunk = int(accum)
+                            accum -= chunk
+                            if chunk:
+                                ev = Quartz.CGEventCreateScrollWheelEvent(
+                                    None,
+                                    Quartz.kCGScrollEventUnitPixel,
+                                    1,         # number of axes
+                                    chunk      # y delta in pixels (+up / -down)
+                                )
+                                if ev:
+                                    Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
+                                    posted += chunk
+                            if i < n_steps - 1 and gap_s > 0:
+                                time.sleep(gap_s)
+                        # Settle any rounding remainder so total pixels match
+                        # what we asked for to the pixel.
+                        leftover = pixels - posted
+                        if leftover:
+                            ev = Quartz.CGEventCreateScrollWheelEvent(
+                                None, Quartz.kCGScrollEventUnitPixel, 1, leftover)
+                            if ev:
+                                Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
+                else:
+                    # Windows / Linux — pyautogui.scroll is sane here. Keep
+                    # the existing chunked pacing so replay timing matches
+                    # the recorded gesture.
+                    ticks = raw
+                    if ticks == 0:
+                        ticks = -1 if raw < 0 else 1
+                    step = 3 if ticks > 0 else -3
+                    remaining = ticks
+                    n_chunks = (abs(ticks) + abs(step) - 1) // abs(step)
+                    gap_s = (duration_s / n_chunks) if n_chunks > 0 else 0.0
+                    for i in range(n_chunks):
+                        chunk = step if abs(remaining) >= abs(step) else remaining
+                        pyautogui.scroll(chunk)
+                        remaining -= chunk
+                        if i < n_chunks - 1 and gap_s > 0:
+                            time.sleep(gap_s)
             finally:
                 pyautogui.PAUSE = saved_pause
 

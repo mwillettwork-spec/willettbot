@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Myles Willett. All rights reserved.
+# Copyright (c) 2026 WillettBot Inc. All rights reserved.
 # Proprietary and confidential. No reproduction, distribution, or use
 # without express written permission.
 
@@ -112,23 +112,56 @@ def modifier_name(key):
     return None
 
 
+_IS_MAC = sys.platform == 'darwin'
+
+# macOS Carbon virtual key codes (kVK_ANSI_*) → character. Only used when
+# running on Darwin. macOS reports DIFFERENT vk codes than Windows: Win32
+# uses ASCII-aligned VKs (T=0x54, 1=0x31), Carbon uses HID-derived codes
+# (T=0x11, 1=0x12). Without this table, Cmd+T on Mac arrives as
+# KeyCode(vk=0x11, char=None) — char is None because macOS suppresses the
+# layout transform under Cmd — and falls through every fallback below,
+# silently dropping the hotkey. Codes are stable across QWERTY layouts.
+_MAC_VK_TO_CHAR = {
+    0x00: 'a', 0x01: 's', 0x02: 'd', 0x03: 'f', 0x04: 'h', 0x05: 'g',
+    0x06: 'z', 0x07: 'x', 0x08: 'c', 0x09: 'v', 0x0B: 'b', 0x0C: 'q',
+    0x0D: 'w', 0x0E: 'e', 0x0F: 'r', 0x10: 'y', 0x11: 't',
+    0x12: '1', 0x13: '2', 0x14: '3', 0x15: '4', 0x16: '6', 0x17: '5',
+    0x18: '=', 0x19: '9', 0x1A: '7', 0x1B: '-', 0x1C: '8', 0x1D: '0',
+    0x1E: ']', 0x1F: 'o', 0x20: 'u', 0x21: '[', 0x22: 'i', 0x23: 'p',
+    0x25: 'l', 0x26: 'j', 0x27: "'", 0x28: 'k', 0x29: ';', 0x2A: '\\',
+    0x2B: ',', 0x2C: '/', 0x2D: 'n', 0x2E: 'm', 0x2F: '.', 0x32: '`',
+}
+
+
 def _modified_key_name(key):
     """Resolve a non-modifier key event to a single combo-name letter/digit
-    (e.g. 'c' for the C key, '7' for the 7 key) — robust to a Windows pynput
-    quirk where key.char comes back as a control character when Ctrl is held
-    (\\x03 for Ctrl+C, \\x16 for Ctrl+V, etc.) and the literal char is wrong.
+    (e.g. 'c' for the C key, '7' for the 7 key) — robust to two
+    platform-specific pynput quirks at once:
+
+      • Windows: key.char comes back as a control character when Ctrl is held
+        (\\x03 for Ctrl+C, \\x16 for Ctrl+V, etc.) — the literal char is wrong.
+      • macOS: key.char comes back as None for Cmd+letter combos because the
+        OS doesn't run the keyboard-layout transform when Command is held.
+        Without a vk → letter map this would silently drop Cmd+T / Cmd+W /
+        every menu-bar shortcut.
 
     Strategy:
-      1. Prefer key.vk (Win32 virtual key code on Windows; HID/macOS/X11
-         scancode-mapped on the others). For ASCII letters and digits, the
-         VK codes happen to align with ASCII: 0x30-0x39 = '0'-'9',
-         0x41-0x5A = 'A'-'Z'. We lowercase letters because runner.py /
-         pyautogui expect lowercase combo names ('ctrl', 'c').
-      2. Fall back to key.char. If that came through as a control character
-         (\\x01-\\x1A), translate it back to its source letter.
-      3. Final fallback: special-key table (function keys, arrows, etc.).
-    Returns None if we genuinely can't make sense of the key — caller skips."""
+      1. macOS only: if vk is in the Carbon kVK_ANSI_* map, use that.
+      2. Otherwise check Win32 ASCII-aligned VK ranges (0x30-0x39 = digits,
+         0x41-0x5A = letters). Lowercased — runner.py / pyautogui expect
+         lowercase combo names ('ctrl', 'c').
+      3. Fall back to key.char (printable letter or control-char-decoded).
+      4. Final fallback: special-key table (function keys, arrows, etc.).
+    Returns None if we genuinely can't make sense of the key — caller skips.
+
+    Mac-first ordering matters: Mac vk 0x32 is '`' but on Windows that same
+    raw 0x32 is in the digits range, so without the platform gate we'd
+    misclassify '`' as '2' on Mac (or vice versa)."""
     vk = getattr(key, 'vk', None)
+    if _IS_MAC and isinstance(vk, int):
+        c = _MAC_VK_TO_CHAR.get(vk)
+        if c:
+            return c
     if isinstance(vk, int):
         if 0x30 <= vk <= 0x39:                # digits 0-9
             return chr(vk)
@@ -321,6 +354,29 @@ class Recorder:
 
         now = time.time()
 
+        # First-key diagnostic. Emits ONCE per recording with the raw vk/char
+        # plus what the recorder *thinks* is held vs what the OS *actually*
+        # has held. If a user reports "Cmd+T didn't get captured", this line
+        # in the hub log usually points at the cause within seconds — was vk
+        # missing, was active_modifiers empty when it shouldn't have been,
+        # was real_mods None because the Quartz probe failed, etc. Cheap to
+        # leave on permanently — one emit per recording.
+        if not getattr(self, '_dbg_first_key_emitted', False):
+            try:
+                _real = platform.get_real_modifier_state()
+            except Exception:
+                _real = None
+            try:
+                emit({"event": "log",
+                      "message": "[recorder dbg] first key: vk="
+                                 + str(getattr(key, 'vk', None))
+                                 + " char=" + repr(getattr(key, 'char', None))
+                                 + " active_modifiers=" + repr(sorted(self.active_modifiers))
+                                 + " real_mods=" + (repr(sorted(_real)) if _real else repr(_real))})
+            except Exception:
+                pass
+            self._dbg_first_key_emitted = True
+
         # Flush a pending v-scroll burst before we touch any key — the user
         # was scrolling, then started typing. The scroll should land in the
         # events list before whatever this key produces.
@@ -334,14 +390,22 @@ class Recorder:
                 self.active_modifiers.add(mn)
             return
 
-        # Sanity-check active_modifiers against the OS's real key state. On
-        # Windows this catches the false-positive-hotkey bug where pynput
-        # missed a Ctrl-release event (because focus changed, a modal stole
-        # it, etc.) and 'ctrl' is left stuck in active_modifiers — which
-        # would otherwise turn the very next plain-letter keypress into a
-        # bogus Ctrl+letter hotkey. On Mac/Linux the platform helper returns
-        # None, meaning "trust active_modifiers as-is" (pynput is reliable
-        # there). Any modifier the OS says ISN'T held gets discarded.
+        # Sanity-check active_modifiers against the OS's real key state.
+        # Two distinct bugs this catches:
+        #   FALSE POSITIVE — pynput missed a Cmd/Ctrl-release because focus
+        #     changed mid-keystroke. 'cmd' stays stuck in active_modifiers
+        #     and the very next plain letter gets misclassified as Cmd+letter.
+        #     Subtract anything the OS says ISN'T held.
+        #   FALSE NEGATIVE — pynput's modifier-press callback ran on a
+        #     different OS thread and got scheduled AFTER the letter callback.
+        #     active_modifiers is empty even though Cmd IS down. On macOS
+        #     this is the dominant cause of "Cmd+T was silently dropped"
+        #     because key.char is also None for Cmd+letter (the OS suppresses
+        #     the layout transform under Cmd). Add anything the OS says IS
+        #     held that we don't already know about.
+        # platform_mac now implements get_real_modifier_state via Quartz, so
+        # both paths run on macOS. Other platforms keep their existing
+        # behavior — get_real_modifier_state returns None and we trust pynput.
         try:
             real = platform.get_real_modifier_state()
         except Exception:
@@ -350,6 +414,9 @@ class Recorder:
             stale = self.active_modifiers - real
             if stale:
                 self.active_modifiers -= stale
+            missing = real - self.active_modifiers
+            if missing:
+                self.active_modifiers |= missing
 
         # Is a non-shift modifier active? Then this is a hotkey combo.
         mods = self.active_modifiers - {'shift'}
@@ -385,7 +452,12 @@ class Recorder:
             if not combo:
                 return
             keys_list.append(combo)
-            self._record(now, {"action": "hotkey", "keys": keys_list})
+            # Stamp the frontmost app + window title onto the hotkey so the
+            # runner can refocus it on replay. Without this, Cmd+T recorded
+            # while Chrome was frontmost would replay against whatever app is
+            # frontmost at replay time (often WillettBot's own hub) — and
+            # silently no-op.
+            self._record(now, self._attach_app({"action": "hotkey", "keys": keys_list}))
             return
 
         if char is not None:
@@ -451,13 +523,18 @@ class Recorder:
             if (now - self._vscroll_last_ts) > VSCROLL_BURST_WINDOW and self._vscroll_sum != 0:
                 self._flush_vscroll()
             if self._vscroll_sum == 0:
-                # Anchor cursor x/y at the start of each burst so replay
-                # can position the cursor over the right spot before
-                # scrolling — apps like Excel / split-pane web pages
-                # only scroll the panel under the cursor.
-                self._vscroll_x = int(x)
-                self._vscroll_y = int(y)
                 self._vscroll_first_ts = now
+            # Update the cursor anchor on EVERY event, not just the first.
+            # On a long scroll the cursor often drifts (especially with a
+            # trackpad — fingers move while scrolling). Anchoring at burst-
+            # start meant a 2-second scroll that started over Chrome's main
+            # pane but ended over its sidebar replayed against the sidebar
+            # only. Last-position-wins keeps replay aligned with where the
+            # user *finished* scrolling, which is what matters for split-
+            # pane apps (Slack, GitHub, Excel) where the cursor's final
+            # position determines which pane scrolls.
+            self._vscroll_x = int(x)
+            self._vscroll_y = int(y)
             self._vscroll_sum += float(dy)
             self._vscroll_last_ts = now
             return
@@ -509,6 +586,19 @@ class Recorder:
         duration_ms = int(round((self._vscroll_last_ts - self._vscroll_first_ts) * 1000))
         if duration_ms < 0:
             duration_ms = 0
+        # Floor for single-event bursts. A high-resolution trackpad can deliver
+        # one large dy in a single pynput callback — duration_ms ends up at 0
+        # and the runner fires every step of replay simultaneously, which
+        # looks like a teleport. ~80 ms is roughly five animation frames at
+        # 60 Hz; anything shorter is below human perception of "speed" anyway.
+        # Scale a little with magnitude so big single-event scrolls still feel
+        # like a gesture and not a snap.
+        if duration_ms < 80:
+            duration_ms = max(80, min(400, abs(amount) * 4))
+        # Reset the burst's timestamps so a back-to-back second burst doesn't
+        # inherit stale endpoints (was benign in practice but cleaner this way).
+        self._vscroll_first_ts = 0.0
+        self._vscroll_last_ts = 0.0
         self._record(time.time(), self._attach_app({
             "action": "scroll",
             "x": self._vscroll_x,
