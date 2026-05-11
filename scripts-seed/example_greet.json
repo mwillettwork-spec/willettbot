@@ -1,22 +1,15 @@
 {
   "name": "Greet by name",
-  "description": "Cross-platform starter script. Opens your OS's default text editor (TextEdit on Mac, Notepad on Windows), forces a new blank document, and types a greeting.",
+  "description": "Mac starter script. Opens TextEdit with a fresh blank document and types a greeting in your name.",
   "variables": {
     "name": "Friend"
   },
   "actions": [
-    { "action": "say",          "message": "Starting greet script for {{name}}" },
-    { "action": "open_app",     "name": "{{TEXT_EDITOR}}" },
-    { "action": "wait_for_app", "name": "{{TEXT_EDITOR}}", "timeout": 20, "label": "wait until {{TEXT_EDITOR}} is frontmost" },
-    { "action": "wait",         "seconds": 0.6, "label": "let the UI settle" },
-
-    { "action": "press",        "key": "escape", "label": "dismiss any Open / file-picker panel that came up first" },
-    { "action": "wait",         "seconds": 0.3 },
-
-    { "action": "hotkey",       "keys": ["{{MOD}}", "n"], "label": "force a new blank document (Cmd+N on Mac, Ctrl+N on Windows)" },
-    { "action": "wait",         "seconds": 1.2, "label": "let the new doc window appear" },
-
-    { "action": "type",         "text": "Hello {{name}} — this was written by WillettBot.\n" },
-    { "action": "say",          "message": "Done." }
+    { "action": "say",         "message": "Starting greet script for {{name}}" },
+    { "action": "applescript", "script": "tell application \"TextEdit\"\n  activate\n  make new document\nend tell",
+      "label": "open TextEdit with a fresh blank document (skips the iCloud file picker that TextEdit shows on launch)" },
+    { "action": "wait",        "seconds": 0.8, "label": "let the new doc window come to the front and grab focus" },
+    { "action": "type",        "text": "Hello {{name}} — this was written by WillettBot.\n" },
+    { "action": "say",         "message": "Done." }
   ]
 }
