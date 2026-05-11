@@ -1846,8 +1846,12 @@
 </div>
 
 <!-- Script variables form — shown before a script runs when it declares variables. -->
-<div id="script-vars-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this) cancelScriptVars()">
-  <div class="modal" style="max-width:520px">
+<!-- backdrop-filter:none + GPU-layered inner modal mirror what the editor /
+     workflow / legal modals do. Typing into the variables fields (especially
+     long Gmail bodies) was retriggering the blur composite on every keystroke,
+     making each character feel like it lagged behind the typing. -->
+<div id="script-vars-modal" class="modal-overlay" style="display:none;backdrop-filter:none;-webkit-backdrop-filter:none" onclick="if(event.target===this) cancelScriptVars()">
+  <div class="modal" style="max-width:520px;contain:paint;will-change:scroll-position;transform:translateZ(0)">
     <div class="modal-subtitle" id="script-vars-subtitle">Fill in the details</div>
     <div class="modal-title" id="script-vars-title">Before we run…</div>
     <div class="modal-body" id="script-vars-body">
@@ -2820,9 +2824,11 @@
   // When a "favorite" card on the hub is clicked, jump into the builder
   // view and immediately open the variables/schedule modal for that script.
   async function launchScriptFromHub(filename) {
-    showView('view-builder')
-    // Make sure the scripts cache is populated before we try to look up
-    // metadata — the builder view might not have been visited yet.
+    // Keep the hub view active and just float the run/variables modal on
+    // top. Switching to view-builder before opening the modal made the
+    // backdrop-filter blur re-compute over a much heavier subtree (the
+    // full scripts + workflows + schedules list) on every keystroke,
+    // which is what felt laggy when the user typed into Gmail's fields.
     if (!_scriptsCache || !_scriptsCache.length) {
       await loadScripts()
     }
@@ -3092,7 +3098,9 @@
   // kicks off the workflow run, so a hub-favorited workflow is a one-click
   // launch from the home view.
   async function launchWorkflowFromHub(id) {
-    showView('view-builder')
+    // Same reasoning as launchScriptFromHub: stay on the hub, just kick
+    // off the workflow run. The orchestrator's progress shows up in the
+    // activity log, which is right there on the hub anyway.
     if (!_workflowsCache || !_workflowsCache.length) {
       await loadWorkflows()
     }
