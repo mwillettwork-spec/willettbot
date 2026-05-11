@@ -1346,42 +1346,61 @@
       </div>
 
       <!-- Favorites strip — auto-hidden when empty. Populated by
-           renderHubFavorites() from the saved favorites.json. -->
+           renderHubFavorites() from the saved favorites.json. Sits above
+           the presets so the user's own daily-driver shortcuts are the
+           first thing they see when the hub opens. -->
       <div id="hub-favorites-section" style="display:none">
         <div class="section-label" style="margin-bottom:16px">Your favorites</div>
         <div id="hub-favorites-grid" class="fav-grid"></div>
       </div>
 
-      <div class="section-label" style="margin-bottom:16px">Automations</div>
+      <!-- Presets row — ready-to-run starters that ship with WillettBot.
+           These three (Auto Clicker, Send Gmail, Greet by name) are also
+           locked at the IPC layer (PRESET_SCRIPTS in main.js) so they
+           can't be deleted out from under the hub tiles. -->
+      <div class="section-label" style="margin-bottom:16px">Presets</div>
       <div class="automations-grid">
 
+        <!-- Tile badges removed: every preset and the builder are equally
+             functional, so a sea of "LIVE" pills was visual noise that
+             didn't help anyone choose between them. -->
         <div class="auto-card clicker" onclick="showView('view-clicker')">
-          <span class="card-badge badge-live">LIVE</span>
           <div class="card-icon">🖱️</div>
           <div class="card-title">Auto Clicker</div>
           <div class="card-desc">Automate mouse clicks at any speed and position you choose.</div>
         </div>
 
         <div class="auto-card emailer" onclick="launchScriptFromHub('send_gmail.json')">
-          <span class="card-badge badge-live">LIVE</span>
           <div class="card-icon">✉️</div>
           <div class="card-title">Send Gmail</div>
           <div class="card-desc">Compose and send an email through your own browser — one-off or on a recurring schedule.</div>
         </div>
 
-        <div class="auto-card builder" onclick="showView('view-builder')">
-          <span class="card-badge badge-new">BETA</span>
-          <div class="card-icon">🧱</div>
-          <div class="card-title">Script Builder</div>
-          <div class="card-desc">All your automations in one place. Run, schedule, and (soon) build new ones from scratch.</div>
+        <div class="auto-card emailer" onclick="launchScriptFromHub('example_greet.json')">
+          <div class="card-icon">👋</div>
+          <div class="card-title">Greet by name</div>
+          <div class="card-desc">Interactive starter — opens your default text editor and types a greeting. Perfect for seeing a recording replay end-to-end.</div>
         </div>
 
+      </div>
+
+      <!-- Builder section — the heart of the app. Promoted to its own
+           full-width tile so it doesn't feel like just another preset.
+           Clicking anywhere on the card jumps into view-builder, where
+           the user can record, edit, run, or build scripts from scratch. -->
+      <div class="section-label" style="margin-bottom:16px">Builder</div>
+      <div class="automations-grid" style="grid-template-columns:1fr;margin-bottom:48px">
+        <div class="auto-card builder" onclick="showView('view-builder')">
+          <div class="card-icon">🧱</div>
+          <div class="card-title">Script Builder</div>
+          <div class="card-desc">Record what you do, tweak it as plain-English blocks, replay it on demand. All your scripts, workflows, and scheduled runs live here.</div>
+        </div>
       </div>
 
       <div class="activity-section">
         <div class="section-label" style="margin-bottom:16px">Recent activity</div>
         <div class="activity-list" id="activity-list">
-          <div class="empty-activity" id="empty-activity">No automations run yet — try sending an email above.</div>
+          <div class="empty-activity" id="empty-activity">No automations run yet — head into the Builder above to record your first script.</div>
         </div>
       </div>
 
@@ -1524,6 +1543,9 @@
             <div style="margin-top:4px">
               WillettBot records <em>every</em> keystroke while recording is active — including anything you type into password, credit-card, or other personal-info fields. <strong>Do not record yourself logging into any website or app.</strong> Stop recording first, log in manually, then start a new recording from after the login screen.
             </div>
+            <div style="margin-top:8px;color:#ffeaea">
+              <strong>Tip:</strong> for one-off values that change every run — codes, today's date, an amount — record up to that field, then in the editor add a <strong>Manual input</strong> step. WillettBot pauses, asks you, and types your answer where the cursor is. Nothing sensitive ever lives in the script file.
+            </div>
           </div>
           <div style="font-size:12px;color:var(--text3);line-height:1.5;margin-bottom:16px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px">
             <strong style="color:var(--text2)">First time recording?</strong> <span class="mac-only">macOS will ask for permission to watch your keystrokes <em>and</em> to control Finder / System Events / any apps you use — click <em>OK</em> on every prompt. If you miss one, you can re-enable it in <em>System Settings → Privacy &amp; Security → Automation</em>. Without Automation permission the recorder only captures raw clicks, not app switches or file opens.</span><span class="win-only">Windows doesn't ask for any permissions — keystrokes and clicks are captured immediately. Just hit <em>Start</em>.</span><span class="linux-only">On X11 the recorder captures clicks and keys directly. On Wayland, app-context detection (which app you switched to, which folder you opened) won't work and you'll just get raw click + key events.</span>
@@ -1608,7 +1630,10 @@
 
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
           <div class="section-label" style="margin-bottom:0">Your scripts</div>
-          <button class="modal-btn" onclick="importScript()" style="font-size:12px;padding:6px 12px">+ Add from file</button>
+          <div style="display:flex;gap:8px">
+            <button class="modal-btn" onclick="openNewScriptEditor()" style="font-size:12px;padding:6px 12px">+ New from scratch</button>
+            <button class="modal-btn" onclick="importScript()" style="font-size:12px;padding:6px 12px">+ Add from file</button>
+          </div>
         </div>
         <div id="scripts-list" class="activity-list" style="margin-bottom:24px">
           <div class="empty-activity">Loading scripts...</div>
@@ -1702,6 +1727,11 @@
       <button id="edit-script-delete-btn" class="modal-btn" style="background:rgba(224,82,82,0.1);border-color:rgba(224,82,82,0.3);color:var(--red)" onclick="deleteScriptFromEditor()">Delete</button>
       <div id="edit-script-preset-note" style="flex:1;font-size:12px;color:var(--text3);align-self:center;display:none">Built-in preset — saving edits is fine, but the file can't be deleted.</div>
       <div id="edit-script-spacer" style="flex:1"></div>
+      <!-- Share lives in the editor (next to Cancel/Save) instead of on
+           every script row in the list — keeps the list clean and puts
+           Share where the user is already editing the script they want
+           to hand off. Hidden for brand-new unsaved scripts and presets. -->
+      <button id="edit-script-share-btn" class="modal-btn" onclick="shareScriptFromEditor()">Share</button>
       <button class="modal-btn" onclick="cancelEditScript()">Cancel</button>
       <button class="modal-btn primary" onclick="saveEditScript()">Save</button>
     </div>
@@ -2593,7 +2623,7 @@
       if (empty) empty.style.display = 'block'
       else list.innerHTML =
         '<div class="empty-activity" id="empty-activity">' +
-        'No automations run yet — try sending an email above.</div>'
+        'No automations run yet — head into the Builder above to record your first script.</div>'
       return
     }
     var rows = activityLog.slice(0, 5).map(function(a) {
@@ -2839,11 +2869,13 @@
           '<div class="script-item-meta">' + s.filename + ' · ' + (s.actionCount || 0) + ' action' + (s.actionCount === 1 ? '' : 's') + '</div>' +
         '</div>' +
         '<div class="script-item-actions">' +
+          // Heart → Edit → Run, in that order, so every row has the
+          // same action shape (matches workflows + favorites). Share
+          // moved into the editor's action bar to declutter the row.
           '<button class="' + favClass + '" title="' + favTitle + '" ' +
             'aria-label="' + favTitle + '" ' +
             'data-file="' + safeFile + '" ' +
             'onclick="toggleFavorite(event, \'' + safeFile + '\')">' + favGlyph + '</button>' +
-          '<button class="modal-btn" onclick="shareScript(\'' + safeFile + '\')">Share</button>' +
           '<button class="modal-btn" onclick="editScript(\'' + safeFile + '\')">Edit</button>' +
           '<button class="modal-btn primary" onclick="runScript(\'' + safeFile + '\')">Run</button>' +
         '</div>' +
@@ -3001,26 +3033,29 @@
     var grid    = document.getElementById('hub-favorites-grid')
     if (!section || !grid || !ipcRenderer) return
     try {
-      // Need both the favorites set AND each script's metadata (name,
-      // description). list-scripts already includes the favorite flag, so
-      // we just filter it — one IPC call, not two.
-      var scripts = await ipcRenderer.invoke('list-scripts')
-      if (!Array.isArray(scripts)) {
-        section.style.display = 'none'
-        return
-      }
-      var favs = scripts.filter(function(s) { return s.favorite })
-      if (!favs.length) {
+      // Pull scripts AND workflows in parallel — both can have favorites
+      // now and we want them rendered side-by-side in the same strip.
+      var scriptsP   = ipcRenderer.invoke('list-scripts')
+      var workflowsP = ipcRenderer.invoke('list-workflows')
+      var scripts    = await scriptsP
+      var wfResp     = await workflowsP
+      var workflows  = (wfResp && wfResp.ok && Array.isArray(wfResp.workflows))
+                         ? wfResp.workflows : []
+      var scriptFavs   = Array.isArray(scripts)
+                           ? scripts.filter(function(s) { return s.favorite })
+                           : []
+      var workflowFavs = workflows.filter(function(w) { return w.favorite })
+
+      if (!scriptFavs.length && !workflowFavs.length) {
         section.style.display = 'none'
         grid.innerHTML = ''
         return
       }
-      grid.innerHTML = favs.map(function(s) {
+
+      var scriptCards = scriptFavs.map(function(s) {
         var safeName = String(s.name || s.filename).replace(/</g, '&lt;')
         var safeDesc = String(s.description || '').replace(/</g, '&lt;')
         var safeFile = String(s.filename).replace(/"/g, '&quot;')
-        // Pick a friendly icon based on action signatures — very rough, but
-        // a nice touch vs. a generic "script" emoji for every card.
         var icon = '🧩'
         return '<div class="auto-card" onclick="launchScriptFromHub(\'' + safeFile + '\')">' +
                  '<span class="fav-mark">♥</span>' +
@@ -3028,12 +3063,40 @@
                  '<div class="card-title">' + safeName + '</div>' +
                  '<div class="card-desc">' + (safeDesc || 'Tap to run.') + '</div>' +
                '</div>'
-      }).join('')
+      })
+
+      var workflowCards = workflowFavs.map(function(w) {
+        var safeName = String(w.name || '(unnamed)').replace(/</g, '&lt;')
+        var safeDesc = String(w.description || '').replace(/</g, '&lt;')
+        var safeId   = String(w.id || '').replace(/"/g, '&quot;')
+        // Slightly different icon so the user can read at a glance that this
+        // is a multi-step workflow vs. a single script.
+        var icon = '🔗'
+        return '<div class="auto-card" onclick="launchWorkflowFromHub(\'' + safeId + '\')">' +
+                 '<span class="fav-mark">♥</span>' +
+                 '<div class="card-icon">' + icon + '</div>' +
+                 '<div class="card-title">' + safeName + '</div>' +
+                 '<div class="card-desc">' + (safeDesc || 'Tap to run.') + '</div>' +
+               '</div>'
+      })
+
+      grid.innerHTML = scriptCards.concat(workflowCards).join('')
       section.style.display = 'block'
     } catch (e) {
       // Don't surface an error card on the hub — silently hide.
       section.style.display = 'none'
     }
+  }
+
+  // Sister of launchScriptFromHub: jumps into the builder and immediately
+  // kicks off the workflow run, so a hub-favorited workflow is a one-click
+  // launch from the home view.
+  async function launchWorkflowFromHub(id) {
+    showView('view-builder')
+    if (!_workflowsCache || !_workflowsCache.length) {
+      await loadWorkflows()
+    }
+    runWorkflowById(id)
   }
 
   // Initial render on page load so favorites appear without needing to
@@ -3051,13 +3114,18 @@
   var _editingScript   = null        // parsed script object (shared state)
   var _editingMode     = 'simple'
   var _dragSourceIndex = null
+  // True while the editor is open on a brand-new script that hasn't hit
+  // disk yet. Used to hide Share (nothing to share) and Delete (nothing
+  // to delete) until the first Save creates the file. Reset by cancel
+  // and by editScript() when opening any saved script.
+  var _editingIsNew    = false
 
-  // Built-in preset scripts. The hub tiles (Send Gmail, Auto Clicker) and the
-  // tour reference these by filename, so deleting one would break first-run
-  // experience. Mirrored in main.js (PRESET_SCRIPTS) where the IPC delete
-  // handler also rejects them — UI hides Delete, backend refuses Delete,
-  // either layer alone catches it.
-  var _PRESET_SCRIPTS = ['send_gmail.json']
+  // Built-in preset scripts. The hub tiles (Send Gmail, Greet, Auto Clicker)
+  // and the tour reference these by filename, so deleting one would break
+  // first-run experience. Mirrored in main.js (PRESET_SCRIPTS) where the IPC
+  // delete handler also rejects them — UI hides Delete, backend refuses
+  // Delete, either layer alone catches it.
+  var _PRESET_SCRIPTS = ['send_gmail.json', 'example_greet.json']
 
   // Per-action-type display metadata for the block flow.
   // icon: short glyph shown in the left badge.
@@ -3200,6 +3268,7 @@
       return
     }
     _editingFilename = filename
+    _editingIsNew = false        // editing an existing on-disk script
     document.getElementById('edit-script-title').textContent = filename
     clearEditError()
     // Hide the Delete button for built-in presets — these get re-seeded on
@@ -3210,9 +3279,15 @@
     var _delBtn = document.getElementById('edit-script-delete-btn')
     var _presetNote = document.getElementById('edit-script-preset-note')
     var _spacer = document.getElementById('edit-script-spacer')
+    var _shareBtn = document.getElementById('edit-script-share-btn')
     if (_delBtn)     _delBtn.style.display     = _isPreset ? 'none' : ''
     if (_presetNote) _presetNote.style.display = _isPreset ? 'block' : 'none'
     if (_spacer)     _spacer.style.display     = _isPreset ? 'none' : ''
+    // Share lives next to Save now (was on every row). Available for any
+    // saved script — including presets, since exporting a preset to hand
+    // to a friend is a totally reasonable thing to do. Hidden only when
+    // the editor was opened with a brand-new unsaved script.
+    if (_shareBtn)   _shareBtn.style.display   = _editingIsNew ? 'none' : ''
 
     var parsed = null
     try { parsed = JSON.parse(resp.content) } catch (e) { parsed = null }
@@ -3233,10 +3308,62 @@
     document.getElementById('edit-script-modal').style.display = 'flex'
   }
 
+  // ── BUILDER: NEW SCRIPT FROM SCRATCH ──
+  // Opens the editor with an empty script — no recording required. The
+  // filename is auto-generated so the user only has to fill in the name
+  // (which is what shows in the list anyway). On Save, write-script
+  // creates the file at SCRIPTS_DIR/<auto-filename>.json.
+  function openNewScriptEditor() {
+    // Auto-generate a safe filename. Date-based so collisions across
+    // multiple "new script" clicks in one session are essentially never.
+    var ts = new Date()
+    var pad = function(n) { return n < 10 ? '0' + n : '' + n }
+    var stamp = ts.getFullYear() + pad(ts.getMonth() + 1) + pad(ts.getDate()) +
+                '_' + pad(ts.getHours()) + pad(ts.getMinutes()) + pad(ts.getSeconds())
+    var filename = 'new_script_' + stamp + '.json'
+
+    _editingFilename = filename
+    _editingIsNew    = true
+    _editingScript   = { name: '', description: '', actions: [] }
+
+    document.getElementById('edit-script-title').textContent = filename
+    clearEditError()
+
+    // Hide Delete + Share for unsaved scripts — nothing exists to remove
+    // or hand off yet. They reappear automatically once the user clicks
+    // Save (loadScripts → re-render → next open uses editScript()).
+    var _delBtn = document.getElementById('edit-script-delete-btn')
+    var _presetNote = document.getElementById('edit-script-preset-note')
+    var _spacer = document.getElementById('edit-script-spacer')
+    var _shareBtn = document.getElementById('edit-script-share-btn')
+    if (_delBtn)     _delBtn.style.display     = 'none'
+    if (_presetNote) _presetNote.style.display = 'none'
+    if (_spacer)     _spacer.style.display     = 'block'
+    if (_shareBtn)   _shareBtn.style.display   = 'none'
+
+    document.getElementById('edit-script-name').value = ''
+    document.getElementById('edit-script-description').value = ''
+    document.getElementById('edit-script-textarea').value =
+      JSON.stringify(_editingScript, null, 2)
+    _setEditMode('simple')
+
+    document.getElementById('edit-script-modal').style.display = 'flex'
+  }
+
+  // Export the currently-open script from inside the editor. Same backend
+  // call as the old per-row Share button — we just changed where the
+  // button lives. _editingFilename is set by editScript() before this
+  // can fire.
+  async function shareScriptFromEditor() {
+    if (!_editingFilename) return
+    shareScript(_editingFilename)
+  }
+
   function cancelEditScript() {
     document.getElementById('edit-script-modal').style.display = 'none'
     _editingFilename = null
     _editingScript = null
+    _editingIsNew = false
     _dragSourceIndex = null
   }
 
@@ -3982,17 +4109,66 @@
       var safeId   = String(wf.id || '').replace(/'/g, '\\\'')
       var n = (wf.steps || []).length
       var stepLabel = n + ' step' + (n === 1 ? '' : 's')
-      return '<div class="script-item">' +
+      // Heart → Edit → Run, matching script rows. Workflow favorites live
+      // in their own file (workflow_favorites.json) so the existing
+      // script-favorites code path is untouched.
+      var favClass = wf.favorite ? 'fav-btn is-fav' : 'fav-btn'
+      var favGlyph = wf.favorite ? '♥' : '♡'
+      var favTitle = wf.favorite ? 'Unfavorite' : 'Favorite'
+      return '<div class="script-item" data-workflow-id="' + safeId + '">' +
         '<div class="script-item-main">' +
           '<div class="script-item-name">' + safeName + '</div>' +
           '<div class="script-item-desc">' + stepLabel + (safeDesc ? ' — ' + safeDesc : '') + '</div>' +
         '</div>' +
         '<div class="script-item-actions">' +
-          '<button class="modal-btn primary" onclick="runWorkflowById(\'' + safeId + '\')">Run</button>' +
+          '<button class="' + favClass + '" title="' + favTitle + '" ' +
+            'aria-label="' + favTitle + '" ' +
+            'data-workflow-id="' + safeId + '" ' +
+            'onclick="toggleWorkflowFavorite(event, \'' + safeId + '\')">' + favGlyph + '</button>' +
           '<button class="modal-btn" onclick="editWorkflow(\'' + safeId + '\')">Edit</button>' +
+          '<button class="modal-btn primary" onclick="runWorkflowById(\'' + safeId + '\')">Run</button>' +
         '</div>' +
       '</div>'
     }).join('')
+  }
+
+  // Workflow favorites: same optimistic-flip pattern as toggleFavorite for
+  // scripts, but talking to toggle-workflow-favorite on the main process
+  // and updating _workflowsCache instead of _scriptsCache.
+  async function toggleWorkflowFavorite(ev, id) {
+    if (ev && ev.stopPropagation) ev.stopPropagation()
+    if (!ipcRenderer || !id) return
+    var btn = ev && ev.currentTarget ? ev.currentTarget : null
+    var wasFav = btn ? btn.classList.contains('is-fav') : false
+    if (btn) {
+      btn.classList.toggle('is-fav')
+      btn.textContent = btn.classList.contains('is-fav') ? '♥' : '♡'
+    }
+    if (Array.isArray(_workflowsCache)) {
+      var cached = _workflowsCache.find(function(w) { return w.id === id })
+      if (cached) cached.favorite = !wasFav
+    }
+    try {
+      var res = await ipcRenderer.invoke('toggle-workflow-favorite', { id: id })
+      if (!res || !res.ok) {
+        if (btn) {
+          btn.classList.toggle('is-fav')
+          btn.textContent = btn.classList.contains('is-fav') ? '♥' : '♡'
+        }
+        if (Array.isArray(_workflowsCache)) {
+          var c2 = _workflowsCache.find(function(w) { return w.id === id })
+          if (c2) c2.favorite = wasFav
+        }
+        appendLog && appendLog('warn', 'Could not favorite workflow: ' + ((res && res.error) || 'unknown'))
+        return
+      }
+      renderHubFavorites()
+    } catch (e) {
+      if (btn) {
+        btn.classList.toggle('is-fav')
+        btn.textContent = btn.classList.contains('is-fav') ? '♥' : '♡'
+      }
+    }
   }
 
   // ── EDITOR: open / cancel ──
@@ -4984,7 +5160,7 @@
     {
       icon: '🚀',
       title: "You're ready",
-      body: "That's the whole tour. Try clicking <b>Send Gmail</b> on the hub to see an automation in action, or jump into <b>Script Builder</b> and record something. You can replay this tour anytime using the <b>tour</b> link in the top-right. If something breaks, reach out via the <b>Contact</b> link in the footer."
+      body: "That's the whole tour. Jump into the <b>Script Builder</b> on the hub and record something — that's the heart of WillettBot. The presets (Gmail, Greet, Auto Clicker) are there if you want a quick taste of an automation running. You can replay this tour anytime using the <b>tour</b> link in the top-right. If something breaks, reach out via the <b>Contact</b> link in the footer."
     }
   ]
 

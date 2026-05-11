@@ -1,0 +1,2505 @@
+===================================================================
+WillettBot — Source Code Deposit for U.S. Copyright Registration
+Author: Myles Willett
+Copyright (c) 2026 Myles Willett. All rights reserved.
+===================================================================
+
+
+===================================================================
+FILE: main.js
+===================================================================
+
+// Copyright (c) 2026 Myles Willett. All rights reserved.
+// Proprietary and confidential. No reproduction, distribution, or use
+// without express written permission.
+
+const { app, BrowserWindow, ipcMain, shell, dialog, screen, globalShortcut } = require('electron')
+const path = require('path')
+const { exec, spawn } = require('child_process')
+const fs = require('fs')
+const os = require('os')
+
+// electron-updater = check GitHub Releases for new DMGs on launch, download
+// them in the background, and prompt the user to restart. Wrapped in a
+// try/require so `npm start` in dev still works before the dep is installed.
+let autoUpdater = null
+try {
+  autoUpdater = require('electron-updater').autoUpdater
+} catch (e) {
+  console.log('[auto-update] electron-updater not installed — dev mode ok')
+}
+
+// ── AUTO-UPDATE WIRING ──────────────────────────────────────────────────────
+// Checks on every launch when the app is packaged (not in `electron .` dev).
+// Silent until a new version has finished downloading — then we pop a dialog
+// asking the user to restart. Failure is logged but never blocks the app
+// (offline Mac, GitHub down, rate limits — none of that should stall launch).
+function setupAutoUpdate() {
+  if (!autoUpdater) return
+  if (!app.isPackaged) { console.log('[auto-update] skipped — dev mode'); return }
+
+  autoUpdater.autoDownload = true
+  autoUpdater.autoInstallOnAppQuit = true
+
+  autoUpdater.on('checking-for-update', () => console.log('[auto-update] checking…'))
+  autoUpdater.on('update-available',    (info) => console.log('[auto-update] available:', info.version))
+  autoUpdater.on('update-not-available',(info) => console.log('[auto-update] up to date:', info.version))
+  autoUpdater.on('error',               (err)  => console.error('[auto-update] error:', err && err.message))
+
+  autoUpdater.on('download-progress', (p) => {
+    // Keep this at log-level — prompting the user mid-download would be
+    // annoying. They'll see the "restart to update" dialog when it finishes.
+    console.log('[auto-update] download', Math.round(p.percent) + '%')
+  })
+
+  autoUpdater.on('update-downloaded', (info) => {
+    console.log('[auto-update] ready:', info.version)
+    // Non-blocking dialog. If the user clicks "Later", electron-updater's
+    // autoInstallOnAppQuit will apply the update next time the app quits.
+    dialog.showMessageBox({
+      type: 'info',
+      buttons: ['Restart now', 'Later'],
+      defaultId: 0,
+      cancelId: 1,
+      title: 'WillettBot update ready',
+      message: 'Version ' + info.version + ' has been downloaded.',
+      detail: 'Restart to finish applying the update. Your recorded scripts and activation will be preserved.'
+    }).then(({ response }) => {
+      if (response === 0) autoUpdater.quitAndInstall()
+    }).catch(e => console.error('[auto-update dialog]', e))
+  })
+
+  // Fire the check. 10-sec delay to avoid fighting Python bootstrap for CPU
+  // / network at launch; the user won't notice either way since updates
+  // download in the background.
+  setTimeout(() => {
+    autoUpdater.checkForUpdates().catch(e => console.error('[auto-update check]', e))
+  }, 10000)
+}
+
+// Hold the currently running clicker child process (if any) so we can kill it.
+let clickerProc = null
+// Hold the currently running script runner child (if any).
+let scriptProc = null
+// Hold the currently running recorder (pynput-based macro capture).
+let recorderProc = null
+
+// Global emergency-stop Esc hotkey. Because scripts run the mouse/keyboard at
+// machine speed, we want a single reliable panic button the user can hit from
+// anywhere on their Mac — even while the script is dragging focus around. We
+// register Escape as a globalShortcut only while a script or clicker is
+// running, and unregister as soon as nothing is active so normal Esc behavior
+// (closing dialogs, stopping playback, etc.) is unaffected the rest of the
+// time.
+let _stopHotkeyRegistered = false
+function installStopHotkey() {
+  if (_stopHotkeyRegistered) return
+  try {
+    const ok = globalShortcut.register('Escape', () => {
+      // Kill anything that's running. Use SIGTERM so the Python side can
+      // still emit a clean 'stopped' event before exiting.
+      if (scriptProc) {
+        try { scriptProc.kill('SIGTERM') } catch (e) {}
+        // Notify the UI so the Stop button resets even if the user pressed
+        // Esc instead of clicking it.
+        try { BrowserWindow.getAllWindows().forEach(w => w.webContents.send('script-event', { event: 'stopped', reason: 'hotkey' })) } catch (e) {}
+      }
+      if (clickerProc) {
+        try { clickerProc.kill('SIGTERM') } catch (e) {}
+      }
+      if (recorderProc) {
+        try { recorderProc.kill('SIGTERM') } catch (e) {}
+      }
+      uninstallStopHotkey()
+    })
+    _stopHotkeyRegistered = !!ok
+  } catch (e) { console.error('[stop-hotkey register]', e) }
+}
+function uninstallStopHotkey() {
+  if (!_stopHotkeyRegistered) return
+  try { globalShortcut.unregister('Escape') } catch (e) {}
+  _stopHotkeyRegistered = false
+}
+
+// Where user-writable data lives. Critical once the app is packaged: the
+// .app bundle itself is read-only on macOS, so scripts / favorites / schedules
+// MUST live in the per-user data directory. Can be overridden with an env var
+// for tests. Falls back to __dirname for bare-node contexts (which is how the
+// test harnesses load main.js via _compile).
+const DATA_DIR = process.env.WILLETTBOT_DATA_DIR ||
+  ((app && typeof app.getPath === 'function')
+    ? (() => { try { return app.getPath('userData') } catch (e) { return __dirname } })()
+    : __dirname)
+
+// Where bundled Python scripts live at runtime. In development this is just
+// __dirname. Once packaged, __dirname points inside app.asar — and Python
+// (a separate process) can't read inside an asar archive. electron-builder is
+// configured to unpack *.py alongside app.asar at app.asar.unpacked/, so at
+// runtime we swap the path to point there.
+const PY_DIR = __dirname.includes(`app.asar${path.sep}`) || __dirname.endsWith('app.asar')
+  ? __dirname.replace(/app\.asar(?=$|[\\/])/, 'app.asar.unpacked')
+  : __dirname
+
+// ── Python runtime bootstrap ─────────────────────────────────────────
+// WillettBot's automation scripts need pyautogui + pynput at runtime.
+// Two paths:
+//
+//   1. PACKAGED (production): we ship a portable Python with all deps
+//      pre-installed inside the .app bundle at Contents/Resources/python/.
+//      Zero setup needed — the app just uses that Python directly.
+//
+//   2. DEV MODE (`npm start`): no bundled Python on disk. Fall back to
+//      creating a venv in DATA_DIR the first time and pip-install the
+//      deps from the user's system Python. This is how the dev loop
+//      works without requiring Myles to run prepare-python.sh.
+
+// PACKAGED path: extraResources in package.json copies bundled-python/python/
+// to <app>.app/Contents/Resources/python/. process.resourcesPath resolves to
+// that Contents/Resources dir at runtime. In dev this points at Electron's
+// own resources which won't contain our Python — so the lookup fails and
+// we fall through to the venv bootstrap below.
+const BUNDLED_PY = (() => {
+  try {
+    if (!app || !app.isPackaged || !process.resourcesPath) return null
+    const p = path.join(process.resourcesPath, 'python', 'bin', 'python3')
+    return fs.existsSync(p) ? p : null
+  } catch (_) { return null }
+})()
+
+const VENV_DIR   = path.join(DATA_DIR, 'venv')
+const VENV_PY    = path.join(VENV_DIR, 'bin', 'python3')
+const VENV_READY = path.join(VENV_DIR, '.wb-ready')   // marker: setup succeeded
+const PY_DEPS    = ['pyautogui', 'pynput']
+
+// Search common macOS install locations for a system python3 to bootstrap
+// the venv. We only need this once — the venv has its own python after.
+function findBootstrapPython() {
+  const candidates = [
+    '/opt/homebrew/bin/python3',                                 // Apple Silicon Homebrew
+    '/usr/local/bin/python3',                                    // Intel Homebrew / python.org
+    '/Library/Frameworks/Python.framework/Versions/Current/bin/python3', // python.org installer
+    '/usr/bin/python3',                                          // older system python
+    '/Library/Developer/CommandLineTools/usr/bin/python3'        // Xcode Command Line Tools
+  ]
+  for (const p of candidates) {
+    try { if (fs.existsSync(p)) return p } catch (_) {}
+  }
+  return 'python3'  // last resort: hope PATH has it
+}
+
+function pythonEnvReady() {
+  try { return fs.existsSync(VENV_PY) && fs.existsSync(VENV_READY) }
+  catch (_) { return false }
+}
+
+// Broadcast bootstrap progress so the hub can show a "setting up" banner.
+function broadcastPyBootstrap(stage, detail) {
+  const wins = BrowserWindow.getAllWindows()
+  for (const w of wins) {
+    try { w.webContents.send('py-bootstrap', { stage, detail: detail || null }) }
+    catch (_) {}
+  }
+}
+
+// Promise cache so concurrent callers share one bootstrap, and we don't
+// try to re-run it if it already succeeded this session.
+let pythonEnvPromise = null
+function ensurePythonEnv() {
+  // Fast path — packaged app: use the Python we ship inside the .app.
+  // This is the ONLY path regular users ever hit, so it must cost nothing.
+  if (BUNDLED_PY) return Promise.resolve(BUNDLED_PY)
+  if (pythonEnvReady()) return Promise.resolve(VENV_PY)
+  if (pythonEnvPromise)  return pythonEnvPromise
+  pythonEnvPromise = (async () => {
+    const bootstrap = findBootstrapPython()
+    broadcastPyBootstrap('creating-venv')
+    await new Promise((resolve, reject) => {
+      const p = spawn(bootstrap, ['-m', 'venv', VENV_DIR], { stdio: 'pipe' })
+      let err = ''
+      p.stderr.on('data', d => { err += d.toString() })
+      p.on('error', reject)
+      p.on('close', code => code === 0 ? resolve()
+        : reject(new Error('venv creation failed (code ' + code + '): ' + err.trim())))
+    })
+    broadcastPyBootstrap('installing-deps')
+    await new Promise((resolve, reject) => {
+      const p = spawn(VENV_PY,
+        ['-m', 'pip', 'install', '--quiet', '--disable-pip-version-check', ...PY_DEPS],
+        { stdio: 'pipe' })
+      let err = ''
+      p.stderr.on('data', d => { err += d.toString() })
+      p.on('error', reject)
+      p.on('close', code => code === 0 ? resolve()
+        : reject(new Error('pip install failed (code ' + code + '): ' + err.trim())))
+    })
+    fs.writeFileSync(VENV_READY, new Date().toISOString())
+    broadcastPyBootstrap('ready')
+    return VENV_PY
+  })().catch(err => {
+    broadcastPyBootstrap('failed', String(err && err.message || err))
+    pythonEnvPromise = null  // clear cache so next call retries
+    throw err
+  })
+  return pythonEnvPromise
+}
+
+// Where user scripts live. Bootstrapped on startup if missing. First launch
+// after install seeds from the bundled `scripts-seed/` extra-resources dir
+// so new users have a few example scripts to browse.
+const SCRIPTS_DIR = path.join(DATA_DIR, 'scripts')
+
+// Where favorite-flags live. Just a list of filenames the user has ♥'d so they
+// bubble up to the hub as quick-launch cards. Kept separate from each script
+// file so favoriting doesn't rewrite script JSON.
+const FAVORITES_FILE = path.join(DATA_DIR, 'favorites.json')
+
+function loadFavorites() {
+  try {
+    if (!fs.existsSync(FAVORITES_FILE)) return []
+    const raw = fs.readFileSync(FAVORITES_FILE, 'utf8')
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    // Deduplicate + drop non-strings just in case the file got hand-edited.
+    return Array.from(new Set(parsed.filter(f => typeof f === 'string')))
+  } catch (e) {
+    console.error('[willettbot] favorites load failed:', e)
+    return []
+  }
+}
+
+function saveFavorites(list) {
+  try {
+    fs.writeFileSync(FAVORITES_FILE,
+                     JSON.stringify(Array.from(new Set(list)), null, 2), 'utf8')
+    return true
+  } catch (e) {
+    console.error('[willettbot] favorites save failed:', e)
+    return false
+  }
+}
+
+// Drop any favorite whose underlying script file no longer exists — keeps the
+// hub from rendering dead cards after a user deletes a script from disk.
+function pruneFavorites(list) {
+  return list.filter(f => {
+    try { return fs.existsSync(path.join(SCRIPTS_DIR, f)) }
+    catch (e) { return false }
+  })
+}
+
+// ── ACTIVATION / LICENSE ───────────────────────────────────────────────────
+// Ed25519-signed keys minted by licensing/keygen.js. The public key is bundled
+// with the app; there's no network call — the whole thing validates locally.
+// Activation state lives in the per-user Electron userData directory so it
+// survives across app sessions but can't accidentally land in the repo.
+const { verifyKey: verifyLicenseKey, PREFIX: LICENSE_PREFIX } =
+  require('./licensing/keygen.js')
+
+const PUB_KEY_PATH = path.join(__dirname, 'licensing', 'public_key.pem')
+let PUB_KEY_PEM = null
+try {
+  PUB_KEY_PEM = fs.readFileSync(PUB_KEY_PATH, 'utf8')
+} catch (e) {
+  console.error('[willettbot] public key missing at', PUB_KEY_PATH,
+                '— activation will always fail until you run',
+                '`node licensing/keygen.js init`.')
+}
+
+// Lazily resolved because app.getPath('userData') isn't available until
+// whenReady. We cache after first call.
+let _activationFilePath = null
+function activationFilePath() {
+  if (_activationFilePath) return _activationFilePath
+  try {
+    _activationFilePath = path.join(app.getPath('userData'), 'activation.json')
+  } catch (e) {
+    // Fallback for off-Electron test harnesses — use DATA_DIR which also
+    // honors WILLETTBOT_DATA_DIR so tests can point at a scratch folder.
+    _activationFilePath = path.join(DATA_DIR, 'activation.json')
+  }
+  return _activationFilePath
+}
+
+function loadActivation() {
+  try {
+    const p = activationFilePath()
+    if (!fs.existsSync(p)) return null
+    const raw = JSON.parse(fs.readFileSync(p, 'utf8'))
+    if (!raw || typeof raw !== 'object' || typeof raw.key !== 'string') return null
+    return raw
+  } catch (e) {
+    console.error('[willettbot] activation load failed:', e)
+    return null
+  }
+}
+
+function saveActivation(record) {
+  try {
+    const p = activationFilePath()
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, JSON.stringify(record, null, 2), 'utf8')
+    return true
+  } catch (e) {
+    console.error('[willettbot] activation save failed:', e)
+    return false
+  }
+}
+
+// Quick read: is the stored key still valid right now?
+function currentActivationState() {
+  if (!PUB_KEY_PEM) {
+    return { activated: false, reason: 'no public key bundled' }
+  }
+  const rec = loadActivation()
+  if (!rec) return { activated: false }
+  const res = verifyLicenseKey(rec.key, PUB_KEY_PEM)
+  if (!res.ok) {
+    return { activated: false, reason: res.reason, expired: !!res.expired,
+             info: res.payload || null, key: rec.key }
+  }
+  return { activated: true, info: res.payload, key: rec.key,
+           activatedAt: rec.activatedAt || null }
+}
+
+// Track the main window so we can surface native dialogs & refocus it.
+let mainWin = null
+
+function createWindow() {
+  mainWin = new BrowserWindow({
+    width: 1000,
+    height: 720,
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false
+    }
+  })
+  mainWin.loadFile('hub.html')
+  mainWin.on('closed', () => { mainWin = null })
+}
+
+app.whenReady().then(() => {
+  createWindow()
+  // Kick off the Python env setup in the background so it's ready
+  // by the time the user tries to run or record something. Errors
+  // are surfaced via the py-bootstrap IPC channel to the hub.
+  ensurePythonEnv().catch(err => {
+    console.error('[ensurePythonEnv] background bootstrap failed:', err)
+  })
+  // Fire the auto-update check. Safe to call — guards internally against
+  // dev mode and missing dependency. Never blocks window creation.
+  try { setupAutoUpdate() } catch (e) { console.error('[setupAutoUpdate]', e) }
+})
+
+// Never leave a runaway clicker or script behind when the app quits.
+app.on('before-quit', () => {
+  if (clickerProc) {
+    try { clickerProc.kill('SIGTERM') } catch (e) {}
+    clickerProc = null
+  }
+  if (scriptProc) {
+    try { scriptProc.kill('SIGTERM') } catch (e) {}
+    scriptProc = null
+  }
+  if (recorderProc) {
+    try { recorderProc.kill('SIGTERM') } catch (e) {}
+    recorderProc = null
+  }
+  // Release any global shortcut we grabbed while a script/clicker was running
+  // so Esc doesn't stay captured by our (dead) handler.
+  try { globalShortcut.unregisterAll() } catch (e) {}
+})
+
+// Make sure the scripts folder exists on startup and keep its seed example
+// scripts in sync with whatever's bundled in this build.
+//
+// First install: SCRIPTS_DIR doesn't exist → mkdir + copy every seed file.
+// Upgrade:       SCRIPTS_DIR exists → for each seed file, if the on-disk copy
+//                still matches the hash we recorded the last time we seeded
+//                it, the user hasn't touched it and we safely overwrite with
+//                the new bundled version. If the hash differs, the user has
+//                customized it — leave it alone. New seed files (that didn't
+//                exist in the previous bundle) are always added.
+//
+// The manifest (seed-manifest.json) maps seed filename → sha256 of the
+// version last written by the seeder. Lets upgrades push bug-fixes to example
+// scripts without clobbering user edits. Stored OUTSIDE SCRIPTS_DIR so it
+// never shows up as a script in the list.
+try {
+  const crypto = require('crypto')
+  const manifestPath = path.join(DATA_DIR, 'seed-manifest.json')
+  // Clean up the old manifest location (dot-prefixed inside SCRIPTS_DIR) from
+  // previous builds that wrote it there — it confused the script list.
+  try {
+    const oldPath = path.join(SCRIPTS_DIR, '.seed-manifest.json')
+    if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath)
+  } catch (e) {}
+  if (!fs.existsSync(SCRIPTS_DIR)) fs.mkdirSync(SCRIPTS_DIR, { recursive: true })
+
+  // One-shot cleanup: remove seed scripts we no longer ship. Currently only
+  // copy.json, which was a dev-testing scratch file that leaked into 1.0.2.
+  // Only remove if contents match the known shipped version (don't nuke
+  // anything the user might have kept deliberately). The manifest is checked
+  // here in the upgrade branch too, so if they've modified it we leave it.
+  const RETIRED_SEEDS = ['copy.json']
+
+  // In a packaged app this resolves to
+  //   <app>.app/Contents/Resources/scripts-seed
+  // via extraResources. In dev (`npm start`) process.resourcesPath points at
+  // Electron's internal resources, so we fall back to __dirname/scripts.
+  const candidates = []
+  if (process.resourcesPath) {
+    candidates.push(path.join(process.resourcesPath, 'scripts-seed'))
+  }
+  candidates.push(path.join(__dirname, 'scripts'))
+  let seedDir = null
+  for (const src of candidates) {
+    try {
+      if (fs.existsSync(src) && fs.statSync(src).isDirectory()) {
+        seedDir = src
+        break
+      }
+    } catch (e) { /* try next */ }
+  }
+
+  if (seedDir) {
+    const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex')
+    let manifest = {}
+    try {
+      if (fs.existsSync(manifestPath)) {
+        manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) || {}
+      }
+    } catch (e) { manifest = {} }
+
+    // Clean up retired seed scripts: if the user's on-disk copy still matches
+    // the last hash we seeded it with, they haven't modified it, so it's safe
+    // to remove. Anything modified is preserved.
+    for (const retired of RETIRED_SEEDS) {
+      try {
+        const p = path.join(SCRIPTS_DIR, retired)
+        if (!fs.existsSync(p)) continue
+        const prev = manifest[retired]
+        const cur = sha(fs.readFileSync(p))
+        if (prev && prev === cur) fs.unlinkSync(p)
+      } catch (e) { /* leave alone on any error */ }
+    }
+
+    const newManifest = {}
+    for (const f of fs.readdirSync(seedDir)) {
+      if (!f.endsWith('.json')) continue
+      const from = path.join(seedDir, f)
+      const to   = path.join(SCRIPTS_DIR, f)
+      let fromBuf
+      try { fromBuf = fs.readFileSync(from) } catch (e) { continue }
+      const fromHash = sha(fromBuf)
+      newManifest[f] = fromHash
+
+      if (!fs.existsSync(to)) {
+        // New seed, first install OR new script added in this build.
+        try { fs.writeFileSync(to, fromBuf) } catch (e) {}
+        continue
+      }
+      // Upgrade path: overwrite only if the user's copy matches the last
+      // version we seeded (i.e. they haven't modified it). This lets us ship
+      // fixes to example scripts without nuking user customizations.
+      const prevHash = manifest[f]
+      let currentRaw = null
+      let currentHash = null
+      try {
+        currentRaw = fs.readFileSync(to, 'utf8')
+        currentHash = sha(Buffer.from(currentRaw, 'utf8'))
+      } catch (e) {}
+
+      let shouldUpgrade = false
+      if (prevHash && currentHash && prevHash === currentHash && currentHash !== fromHash) {
+        shouldUpgrade = true
+      }
+      // Legacy migration: users who installed before the manifest existed have
+      // no prevHash for their seed files. For known-broken old seed versions
+      // we detect structural markers in the content and force-upgrade. Right
+      // now the only one is send_gmail.json's old Chrome AppleScript flow,
+      // which hangs on `wait_for_app_frontmost` + hardcoded `tell application
+      // "Google Chrome"`. The new version uses `open <mailto/compose url>` via
+      // the default browser and has neither marker.
+      if (!shouldUpgrade && !prevHash && currentRaw && f === 'send_gmail.json') {
+        const looksOld =
+          currentRaw.indexOf('wait_for_app_frontmost') >= 0 ||
+          currentRaw.indexOf('Google Chrome') >= 0
+        if (looksOld && currentHash !== fromHash) shouldUpgrade = true
+      }
+
+      if (shouldUpgrade) {
+        try { fs.writeFileSync(to, fromBuf) } catch (e) {}
+      }
+    }
+    try { fs.writeFileSync(manifestPath, JSON.stringify(newManifest, null, 2)) } catch (e) {}
+  }
+} catch (e) { console.error('[willettbot] could not create scripts dir:', e) }
+
+// ── TOAST NOTIFICATION ──
+// A frameless, transparent, always-on-top BrowserWindow anchored to the
+// top-right of the primary display. Used for confirm prompts — it looks &
+// feels like a native macOS notification but has our own Continue / Cancel
+// buttons. Returns a Promise resolving to true (continue) or false (cancel).
+let activeToast = null
+let activeToastResolve = null
+
+function showToast(opts) {
+  // Accept either a raw string or an options object for backwards-compat.
+  if (typeof opts === 'string') opts = { message: opts }
+  opts = opts || {}
+
+  // If another toast is somehow still open, resolve it as cancelled first.
+  if (activeToast) {
+    try { activeToast.close() } catch (e) {}
+    if (activeToastResolve) activeToastResolve(false)
+    activeToast = null
+    activeToastResolve = null
+  }
+
+  const display = screen.getPrimaryDisplay()
+  const { width } = display.workArea
+  const { x: workX, y: workY } = display.workArea
+
+  const W = 360
+  const H = 140
+  const margin = 12
+
+  const toastWin = new BrowserWindow({
+    width: W,
+    height: H,
+    x: workX + width - W - margin,
+    y: workY + margin,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    hasShadow: false,      // our CSS does the shadow
+    show: false,           // show after we finish loading to avoid a flash
+    backgroundColor: '#00000000',
+    vibrancy: 'popover',   // optional macOS vibrancy fallback under the CSS blur
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false
+    }
+  })
+  // Float above fullscreen apps, match native notification behavior.
+  try { toastWin.setAlwaysOnTop(true, 'screen-saver') } catch (e) {}
+  try { toastWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }) } catch (e) {}
+
+  toastWin.loadFile('toast.html')
+  toastWin.once('ready-to-show', () => {
+    toastWin.showInactive()   // no focus-steal on first render; keyboard is bound after
+    toastWin.webContents.send('toast-init', {
+      message: String(opts.message || ''),
+      confirmLabel: opts.confirmLabel || null,
+      cancelLabel: opts.cancelLabel || null
+    })
+    // Give the toast focus so Enter/Esc keyboard shortcuts work.
+    try { toastWin.focus() } catch (e) {}
+  })
+
+  activeToast = toastWin
+  return new Promise((resolve) => {
+    activeToastResolve = resolve
+    toastWin.on('closed', () => {
+      if (activeToast === toastWin) {
+        // If the window was closed without a button click (e.g. user killed it),
+        // treat it as a cancel so the runner doesn't hang forever.
+        if (activeToastResolve) activeToastResolve(false)
+        activeToast = null
+        activeToastResolve = null
+      }
+    })
+  })
+}
+
+// Toast's renderer sends this when the user clicks Continue / Cancel / Close.
+ipcMain.on('toast-response', (event, payload) => {
+  const cancelled = !!(payload && payload.cancelled)
+  if (activeToastResolve) {
+    activeToastResolve(!cancelled)   // resolve to true = continue, false = cancel
+    activeToastResolve = null
+  }
+  if (activeToast) {
+    try { activeToast.close() } catch (e) {}
+    activeToast = null
+  }
+})
+
+// Helper: extract the last line from stdout that parses as JSON with x/y keys.
+// Tolerates pyautogui / pynput import-time chatter on some macOS configs.
+function extractPositionFromStdout(stdout) {
+  const lines = stdout.split('\n').map(l => l.trim()).filter(Boolean)
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const parsed = JSON.parse(lines[i])
+      if (parsed && typeof parsed.x === 'number' && typeof parsed.y === 'number') {
+        return parsed
+      }
+      if (parsed && parsed.error) {
+        return { error: parsed.error }
+      }
+    } catch (_) { /* skip non-JSON line */ }
+  }
+  return null
+}
+
+// ── CLICKER: one-shot — grab current mouse position ──
+ipcMain.on('clicker-get-position', async (event) => {
+  let py
+  try { py = await ensurePythonEnv() }
+  catch (e) {
+    event.reply('clicker-position', { error: 'Python setup failed: ' + e.message })
+    return
+  }
+  const scriptPath = path.join(PY_DIR, 'clicker.py')
+  const cmd = `"${py}" "${scriptPath}" --get-position`
+  console.log('[clicker-get-position] scriptPath =', scriptPath)
+  console.log('[clicker-get-position] exec =', cmd)
+
+  exec(cmd, { timeout: 10000 }, (error, stdout, stderr) => {
+    console.log('[clicker-get-position] error  =', error && error.message)
+    console.log('[clicker-get-position] stdout =', JSON.stringify(stdout))
+    console.log('[clicker-get-position] stderr =', JSON.stringify(stderr))
+
+    // ALWAYS include the raw output in the reply, so the UI can surface it
+    // when something goes wrong instead of swallowing the real error.
+    const debug = { stdout: stdout, stderr: stderr, cmd: cmd }
+
+    if (error) {
+      event.reply('clicker-position', {
+        error: (stderr || error.message).trim() || 'exec error',
+        _debug: debug
+      })
+      return
+    }
+
+    const pos = extractPositionFromStdout(stdout)
+    if (pos && typeof pos.x === 'number') {
+      event.reply('clicker-position', { x: pos.x, y: pos.y, _debug: debug })
+    } else if (pos && pos.error) {
+      event.reply('clicker-position', { error: pos.error, _debug: debug })
+    } else {
+      const trimmedErr = (stderr || '').trim()
+      event.reply('clicker-position', {
+        error: trimmedErr || ('No valid JSON in stdout. Got: ' + JSON.stringify(stdout || '')),
+        _debug: debug
+      })
+    }
+  })
+})
+
+// ── CLICKER: start the click loop ──
+ipcMain.on('clicker-start', async (event, config) => {
+  let py
+  try { py = await ensurePythonEnv() }
+  catch (e) {
+    event.reply('clicker-error', { error: 'Python setup failed: ' + e.message })
+    return
+  }
+  // If one is already running, kill it first.
+  if (clickerProc) {
+    try { clickerProc.kill('SIGTERM') } catch (e) {}
+    clickerProc = null
+  }
+
+  const tmpFile = path.join(os.tmpdir(), 'willettbot_clicker.json')
+  fs.writeFileSync(tmpFile, JSON.stringify(config), 'utf8')
+
+  clickerProc = spawn(py, [path.join(PY_DIR, 'clicker.py'), tmpFile])
+  installStopHotkey()
+
+  let stdoutBuf = ''
+  let stderrBuf = ''
+  let sawTerminalEvent = false  // set true once we emit a done/error/stopped/failsafe
+
+  // Parse line-delimited JSON events from clicker.py stdout.
+  clickerProc.stdout.on('data', (chunk) => {
+    stdoutBuf += chunk.toString()
+    let nl
+    while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
+      const line = stdoutBuf.slice(0, nl).trim()
+      stdoutBuf = stdoutBuf.slice(nl + 1)
+      if (!line) continue
+
+      let evt
+      try { evt = JSON.parse(line) } catch (e) { continue }  // ignore non-JSON noise
+
+      if (evt.event === 'click') {
+        event.reply('clicker-tick', { count: evt.count })
+      } else if (evt.event === 'done') {
+        let doneReason = 'finished'
+        if (evt.reason === 'click-limit') doneReason = 'click limit reached'
+        else if (evt.reason === 'time-limit') doneReason = 'time limit reached'
+        event.reply('clicker-done', { reason: doneReason, count: evt.count })
+        sawTerminalEvent = true
+      } else if (evt.event === 'failsafe') {
+        event.reply('clicker-done', { reason: 'stopped', count: evt.count })
+        sawTerminalEvent = true
+      } else if (evt.event === 'stopped') {
+        const reason = evt.reason === 'hotkey' ? 'stopped by hotkey' : 'stopped'
+        event.reply('clicker-done', { reason: reason, count: evt.count })
+        sawTerminalEvent = true
+      } else if (evt.event === 'warning') {
+        event.reply('clicker-warning', { message: evt.message })
+      } else if (evt.event === 'error') {
+        // Pass the error code + python_path through so the hub can pop the
+        // permission banner when Accessibility is the culprit. Without this
+        // the user sees "Error: clicks are being silently dropped..." as
+        // plain status text and has to figure out the fix on their own.
+        event.reply('clicker-done', {
+          reason: 'Error: ' + (evt.message || 'unknown'),
+          count: evt.count || 0,
+          code: evt.code || null,
+          pythonPath: evt.python_path || null,
+        })
+        sawTerminalEvent = true
+      }
+    }
+  })
+
+  clickerProc.stderr.on('data', (chunk) => {
+    stderrBuf += chunk.toString()
+    console.error('[clicker]', chunk.toString())
+  })
+
+  clickerProc.on('close', (code) => {
+    clickerProc = null
+    if (!scriptProc && !recorderProc) uninstallStopHotkey()
+    // Only synthesize an error if the Python side didn't already report one.
+    if (!sawTerminalEvent) {
+      const trimmedErr = stderrBuf.trim()
+      const reason = trimmedErr
+        ? ('Python error: ' + trimmedErr.split('\n').pop())
+        : ('exited with code ' + code)
+      event.reply('clicker-done', { reason: reason, count: 0 })
+    }
+  })
+
+  clickerProc.on('error', (err) => {
+    event.reply('clicker-done', { reason: 'Failed to start python3: ' + err.message, count: 0 })
+    clickerProc = null
+  })
+})
+
+// ── CLICKER: stop the click loop ──
+ipcMain.on('clicker-stop', (event) => {
+  if (clickerProc) {
+    try { clickerProc.kill('SIGTERM') } catch (e) {}
+    clickerProc = null
+  }
+})
+
+// ── MISC: open an external URL in the user's default browser ──
+ipcMain.on('open-external-url', (event, url) => {
+  if (typeof url === 'string' && /^https?:\/\//.test(url)) {
+    shell.openExternal(url).catch(err => console.error('[open-external]', err))
+  }
+})
+
+// ── SCRIPTS: list the JSON files in scripts/ with their metadata ──
+ipcMain.handle('list-scripts', async () => {
+  try {
+    // Filter: .json files only, no dotfile hidden files (the old seeder
+    // wrote .seed-manifest.json into this dir and we never want it to
+    // appear as a fake "script" in the user's list).
+    const files = fs.readdirSync(SCRIPTS_DIR)
+      .filter(f => f.endsWith('.json') && !f.startsWith('.'))
+    // Prune + persist favorites so a deleted script disappears from the hub
+    // silently on the next list refresh.
+    const existingSet = new Set(files)
+    const rawFavs = loadFavorites()
+    const pruned = rawFavs.filter(f => existingSet.has(f))
+    if (pruned.length !== rawFavs.length) saveFavorites(pruned)
+    const favSet = new Set(pruned)
+    return files.map(filename => {
+      const full = path.join(SCRIPTS_DIR, filename)
+      try {
+        const raw = fs.readFileSync(full, 'utf8')
+        const parsed = JSON.parse(raw)
+        return {
+          filename: filename,
+          path: full,
+          name: parsed.name || filename,
+          description: parsed.description || '',
+          actionCount: Array.isArray(parsed.actions) ? parsed.actions.length : 0,
+          variables: parsed.variables || {},
+          favorite: favSet.has(filename)
+        }
+      } catch (e) {
+        return { filename, path: full, name: filename,
+                 description: '(invalid JSON)', actionCount: 0, variables: {},
+                 favorite: favSet.has(filename), error: e.message }
+      }
+    })
+  } catch (e) {
+    return { error: e.message }
+  }
+})
+
+// ── PERMISSION SELF-CHECK ───────────────────────────────────────────────────
+// Runs permcheck.py via the bundled Python to detect macOS Accessibility /
+// Automation / Input Monitoring grants. Critical because the bundled Python
+// is a distinct unsigned binary from the Electron shell — it needs its OWN
+// permission grants. Without them, pyautogui.click() silently no-ops and
+// osascript returns -1743, and the app appears "broken" with no error.
+ipcMain.handle('check-permissions', async () => {
+  try {
+    const py = await ensurePythonEnv()
+    return await new Promise((resolve) => {
+      const scriptPath = path.join(PY_DIR, 'permcheck.py')
+      exec(`"${py}" "${scriptPath}"`, { timeout: 8000 }, (err, stdout, stderr) => {
+        if (err) {
+          return resolve({ ok: false, error: (stderr || err.message).trim(),
+                            pythonPath: py })
+        }
+        const last = String(stdout || '').trim().split('\n').pop() || ''
+        try {
+          const parsed = JSON.parse(last)
+          resolve({ ok: true, ...parsed, pythonPath: parsed.python_path || py })
+        } catch (e) {
+          resolve({ ok: false, error: 'Could not parse permcheck output.',
+                    raw: stdout, pythonPath: py })
+        }
+      })
+    })
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+// Open a specific pane of macOS System Settings by URL scheme. Saves the
+// user from hunting through Privacy & Security to find the right list.
+ipcMain.on('open-system-settings', (event, pane) => {
+  const URLS = {
+    accessibility:    'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
+    automation:       'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
+    inputMonitoring:  'x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent'
+  }
+  const url = URLS[pane] || URLS.accessibility
+  shell.openExternal(url).catch(e => console.error('[open-settings]', e))
+})
+
+// Nuke every TCC grant macOS has for our bundle ID. Critical for non-technical
+// users: every rebuild gives the bundled python3 a new code hash, which
+// invalidates the prior Accessibility grant — pyautogui then silently no-ops
+// with no new prompt. tccutil reset clears the stale record so the next click
+// attempt fires a fresh permission prompt. User doesn't need to find and
+// delete entries in System Settings.
+ipcMain.handle('reset-tcc', async () => {
+  const bundleId = 'com.willett.willettbot'
+  return await new Promise((resolve) => {
+    exec(`tccutil reset All ${bundleId}`, { timeout: 5000 }, (err, stdout, stderr) => {
+      if (err) {
+        return resolve({ ok: false, error: (stderr || err.message).trim() })
+      }
+      resolve({ ok: true, output: (stdout || '').trim() })
+    })
+  })
+})
+
+// Reveal the bundled Python binary in Finder so the user can drag it into
+// the Accessibility / Input Monitoring list on macOS versions that don't
+// auto-add unsigned binaries when the prompt fires (Sonoma+ is stricter).
+ipcMain.on('reveal-python-binary', async () => {
+  try {
+    const py = await ensurePythonEnv()
+    shell.showItemInFolder(py)
+  } catch (e) {
+    console.error('[reveal-python]', e)
+  }
+})
+
+// ── ACTIVATION IPC ──
+// Hub calls check-activation on launch to decide whether to show the
+// activation screen or jump straight to the splash. activate-key is the
+// form-submit target; returns { ok, info | error }. Rejects bad keys
+// loudly but doesn't persist them so the user can retry without leaving
+// a broken file behind.
+ipcMain.handle('check-activation', async () => {
+  try {
+    return { ok: true, ...currentActivationState() }
+  } catch (e) {
+    return { ok: false, error: e.message, activated: false }
+  }
+})
+
+ipcMain.handle('activate-key', async (event, payload) => {
+  try {
+    if (!PUB_KEY_PEM) {
+      return { ok: false, error: 'app is missing licensing/public_key.pem — contact support.' }
+    }
+    const key = (payload && typeof payload.key === 'string') ? payload.key.trim() : ''
+    if (!key) return { ok: false, error: 'Paste your activation key to continue.' }
+    if (!key.startsWith(LICENSE_PREFIX)) {
+      return { ok: false,
+               error: 'That doesn\'t look like a WillettBot key — keys start with "' + LICENSE_PREFIX + '".' }
+    }
+    const res = verifyLicenseKey(key, PUB_KEY_PEM)
+    if (!res.ok) {
+      // Friendly-up the common cases.
+      let msg = 'Key rejected: ' + (res.reason || 'unknown')
+      if (res.expired) msg = 'This key expired on ' + (res.payload && res.payload.expires) + '.'
+      else if (res.reason === 'signature does not match') msg = 'This key isn\'t valid for this build of WillettBot.'
+      return { ok: false, error: msg, expired: !!res.expired, info: res.payload || null }
+    }
+    // Persist. Store the raw key + activatedAt so we can display when it
+    // was first entered and re-verify against future public-key rotations.
+    const record = {
+      key,
+      activatedAt: new Date().toISOString(),
+      email: res.payload.email,
+      tier:  res.payload.tier,
+      id:    res.payload.id,
+    }
+    saveActivation(record)
+    return { ok: true, info: res.payload, activatedAt: record.activatedAt, key }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+// Explicit de-activation. Useful for "switch accounts" during beta and
+// keeps us out of weird states where a key gets invalidated upstream.
+ipcMain.handle('deactivate', async () => {
+  try {
+    const p = activationFilePath()
+    if (fs.existsSync(p)) fs.unlinkSync(p)
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+// Return just the current set of favorited filenames — used by the hub to
+// render the favorites strip without re-reading every script file.
+ipcMain.handle('get-favorites', async () => {
+  try {
+    return { ok: true, favorites: pruneFavorites(loadFavorites()) }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+// Flip favorite state for one script. If `favorite` is omitted, toggle.
+// Returns the new boolean so the UI can update optimistically without
+// another round-trip.
+ipcMain.handle('toggle-favorite', async (event, payload) => {
+  try {
+    if (!payload || !payload.filename) {
+      return { ok: false, error: 'missing filename' }
+    }
+    const filename = String(payload.filename).trim()
+    const scriptPath = path.join(SCRIPTS_DIR, filename)
+    if (!fs.existsSync(scriptPath)) {
+      return { ok: false, error: 'Script not found.' }
+    }
+    const current = new Set(loadFavorites())
+    const alreadyFav = current.has(filename)
+    let newState
+    if (typeof payload.favorite === 'boolean') {
+      newState = payload.favorite
+    } else {
+      newState = !alreadyFav
+    }
+    if (newState) current.add(filename)
+    else current.delete(filename)
+    saveFavorites(Array.from(current))
+    return { ok: true, favorite: newState }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+ipcMain.handle('read-script', async (event, filename) => {
+  try {
+    const full = path.join(SCRIPTS_DIR, filename)
+    return { ok: true, content: fs.readFileSync(full, 'utf8') }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+// Shared script-spawning core. `reply(ch, msg)` is how we forward events
+// back to the caller — when triggered from the Run button it's `event.reply`;
+// when triggered by the scheduler we pass a shim that broadcasts to mainWin.
+function startScriptProc(filename, variables, reply, pythonBin) {
+  if (scriptProc) {
+    try { scriptProc.kill('SIGTERM') } catch (e) {}
+    scriptProc = null
+  }
+  if (!filename) {
+    reply('script-event', { event: 'error', message: 'No script filename provided.' })
+    return false
+  }
+  const scriptPath = path.join(SCRIPTS_DIR, filename)
+  if (!fs.existsSync(scriptPath)) {
+    reply('script-event', { event: 'error', message: 'Script not found: ' + filename })
+    return false
+  }
+
+  // If overrides were passed, write a temp script with merged variables.
+  let effectivePath = scriptPath
+  if (variables && typeof variables === 'object') {
+    try {
+      const original = JSON.parse(fs.readFileSync(scriptPath, 'utf8'))
+      original.variables = Object.assign({}, original.variables || {}, variables)
+      const tmp = path.join(os.tmpdir(), 'willettbot_script_override.json')
+      fs.writeFileSync(tmp, JSON.stringify(original), 'utf8')
+      effectivePath = tmp
+    } catch (e) {
+      reply('script-event', { event: 'error', message: 'Could not merge variables: ' + e.message })
+      return false
+    }
+  }
+
+  scriptProc = spawn(pythonBin || 'python3', [path.join(PY_DIR, 'runner.py'), effectivePath], {
+    stdio: ['pipe', 'pipe', 'pipe']
+  })
+  installStopHotkey()
+
+  let stdoutBuf = ''
+  let stderrBuf = ''
+  let sawTerminal = false
+
+  scriptProc.stdout.on('data', (chunk) => {
+    stdoutBuf += chunk.toString()
+    let nl
+    while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
+      const line = stdoutBuf.slice(0, nl).trim()
+      stdoutBuf = stdoutBuf.slice(nl + 1)
+      if (!line) continue
+      let evt
+      try { evt = JSON.parse(line) } catch (_) { continue }
+
+      // Special handling for prompts: confirms become top-right toast
+      // notifications (macOS-style) that float over whatever app you're in;
+      // inputs still use the in-app modal, but we force the window to the
+      // front so the user sees it.
+      if (evt.event === 'prompt') {
+        const kind = evt.kind || 'confirm'
+        if (kind === 'confirm') {
+          showToast({
+            message: evt.message || 'Continue?',
+            confirmLabel: evt.confirmLabel || null,
+            cancelLabel: evt.cancelLabel || null
+          }).then((accepted) => {
+            const cancelled = !accepted
+            try {
+              if (scriptProc && scriptProc.stdin && !scriptProc.stdin.destroyed) {
+                scriptProc.stdin.write(JSON.stringify({
+                  id: evt.id,
+                  cancelled: cancelled
+                }) + '\n')
+              }
+            } catch (e) { console.error('[prompt confirm] write failed:', e) }
+            reply('script-event', {
+              event: 'log',
+              message: cancelled ? '✖ You cancelled at the confirmation toast.' : '✓ Confirmed.'
+            })
+          })
+          continue
+        } else {
+          try {
+            if (mainWin) {
+              if (mainWin.isMinimized()) mainWin.restore()
+              mainWin.show()
+              mainWin.focus()
+              if (app.focus) app.focus({ steal: true })
+            }
+          } catch (e) { /* non-fatal */ }
+          reply('script-event', evt)
+          continue
+        }
+      }
+
+      reply('script-event', evt)
+      if (evt.event === 'script-done' || evt.event === 'error' || evt.event === 'failsafe' || evt.event === 'stopped') {
+        sawTerminal = true
+      }
+    }
+  })
+
+  scriptProc.stderr.on('data', (chunk) => {
+    stderrBuf += chunk.toString()
+    console.error('[runner]', chunk.toString())
+  })
+
+  scriptProc.on('close', (code) => {
+    scriptProc = null
+    if (!clickerProc && !recorderProc) uninstallStopHotkey()
+    if (!sawTerminal) {
+      const tail = stderrBuf.trim().split('\n').pop() || ('exited with code ' + code)
+      reply('script-event', { event: 'error', message: tail })
+    }
+  })
+
+  scriptProc.on('error', (err) => {
+    reply('script-event', { event: 'error', message: 'Failed to start runner: ' + err.message })
+    scriptProc = null
+  })
+
+  return true
+}
+
+// Activation gate for anything that actually automates the desktop.
+// The hub is expected to block these UIs behind the activation screen, but
+// we enforce server-side too so a poked renderer can't sneak past.
+function assertActivatedOrReply(replyFn) {
+  const st = currentActivationState()
+  if (st.activated) return true
+  replyFn('script-event', {
+    event: 'error',
+    message: 'WillettBot isn\'t activated. Enter your activation key to run scripts.'
+  })
+  return false
+}
+
+// ── SCRIPTS: start a script runner (triggered by the Run button) ──
+ipcMain.on('run-script', async (event, payload) => {
+  const reply = (ch, msg) => event.reply(ch, msg)
+  if (!assertActivatedOrReply(reply)) return
+  let py
+  try { py = await ensurePythonEnv() }
+  catch (e) {
+    reply('script-event', { event: 'error', message: 'Python setup failed: ' + e.message })
+    return
+  }
+  const filename = payload && payload.filename
+  const variables = payload && payload.variables
+  startScriptProc(filename, variables, reply, py)
+})
+
+// ── SCRIPTS: forward a prompt response from the UI to the runner's stdin ──
+ipcMain.on('script-prompt-response', (event, response) => {
+  if (!scriptProc || !scriptProc.stdin || scriptProc.stdin.destroyed) return
+  try {
+    scriptProc.stdin.write(JSON.stringify(response) + '\n')
+  } catch (e) {
+    console.error('[script-prompt-response] write failed:', e)
+  }
+})
+
+// ── SCRIPTS: stop the runner ──
+ipcMain.on('stop-script', () => {
+  if (scriptProc) {
+    try { scriptProc.kill('SIGTERM') } catch (e) {}
+    scriptProc = null
+  }
+})
+
+// ── SCRIPTS: overwrite a script's JSON from the editor ──
+// Used by the Edit modal in hub.html. Rejects invalid JSON or bad filenames
+// so a typo can't clobber a script with garbage.
+ipcMain.handle('write-script', async (event, payload) => {
+  try {
+    if (!payload || !payload.filename || typeof payload.content !== 'string') {
+      return { ok: false, error: 'missing fields' }
+    }
+    let filename = String(payload.filename).trim()
+    if (!filename.endsWith('.json')) filename += '.json'
+    if (!/^[A-Za-z0-9_\-. ]+$/.test(filename)) {
+      return { ok: false, error: 'Filename may only contain letters, numbers, spaces, _, -, or .' }
+    }
+    // Parse-check the content so we don't write a broken script.
+    let parsed
+    try { parsed = JSON.parse(payload.content) }
+    catch (e) { return { ok: false, error: 'Invalid JSON: ' + e.message } }
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.actions)) {
+      return { ok: false, error: 'Script must be an object with an "actions" array.' }
+    }
+    const full = path.join(SCRIPTS_DIR, filename)
+    fs.writeFileSync(full, JSON.stringify(parsed, null, 2), 'utf8')
+    return { ok: true, filename: filename }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+// ── SCRIPTS: delete a script ──
+ipcMain.handle('delete-script', async (event, filename) => {
+  try {
+    if (!filename) return { ok: false, error: 'missing filename' }
+    const safe = String(filename).trim()
+    if (!/^[A-Za-z0-9_\-. ]+$/.test(safe)) {
+      return { ok: false, error: 'Unsafe filename.' }
+    }
+    const full = path.join(SCRIPTS_DIR, safe)
+    if (!fs.existsSync(full)) return { ok: false, error: 'Not found.' }
+    fs.unlinkSync(full)
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+// ── RECORDER: start a mirroring session ──
+// Spawns recorder.py with the chosen start/end hotkeys. The recorder emits
+// JSON event lines on stdout; we forward each one to the renderer. When it
+// emits `done` with a compiled script, the renderer shows a Save panel — the
+// actual save goes through `save-recorded-script` below so the user picks
+// the filename/description.
+ipcMain.on('record-start', async (event, opts) => {
+  // Activation gate: recording is an automation feature too.
+  if (!currentActivationState().activated) {
+    event.reply('record-event', {
+
+=================================================================
+[... middle portion omitted per Copyright Office identifying-portions rule ...]
+=================================================================
+
+    if (_wbTutorialStep > 0) {
+      _wbTutorialStep--
+      _wbRenderTutorialStep()
+    }
+  }
+
+  function _wbFinishTutorial() {
+    try { localStorage.setItem(WB_TUTORIAL_SEEN_KEY, '1') } catch (_) {}
+    var ov = document.getElementById('wb-tut-overlay')
+    if (ov && ov.parentNode) ov.parentNode.removeChild(ov)
+  }
+
+  function startTutorial() {
+    _wbInjectTutorialStyles()
+    _wbTutorialStep = 0
+    var existing = document.getElementById('wb-tut-overlay')
+    if (existing) existing.remove()
+    var overlay = document.createElement('div')
+    overlay.id = 'wb-tut-overlay'
+    overlay.innerHTML = '<div id="wb-tut-card"></div>'
+    document.body.appendChild(overlay)
+    _wbRenderTutorialStep()
+  }
+
+  function maybeShowTutorial() {
+    try {
+      if (localStorage.getItem(WB_TUTORIAL_SEEN_KEY)) return
+    } catch (_) {}
+    // Small delay so the hub renders first and the first step lands on a
+    // settled background instead of a mid-transition splash.
+    setTimeout(startTutorial, 450)
+  }
+
+  // Expose for the status-bar "tour" link.
+  window.startTutorial = startTutorial
+  window._wbTutorialNext = _wbTutorialNext
+  window._wbTutorialBack = _wbTutorialBack
+  window._wbFinishTutorial = _wbFinishTutorial
+</script>
+</body>
+</html>
+
+===================================================================
+FILE: renderer.js
+===================================================================
+
+// Copyright (c) 2026 Myles Willett. All rights reserved.
+// Proprietary and confidential. No reproduction, distribution, or use
+// without express written permission.
+
+const { ipcRenderer } = require('electron')
+
+document.getElementById('root').innerHTML = `
+  <div style="max-width:600px;margin:40px auto;background:white;border-radius:16px;padding:40px;box-shadow:0 4px 24px rgba(0,0,0,0.08)">
+    <h1 style="font-size:28px;font-weight:700;margin-bottom:4px">WillettBot</h1>
+    <p style="color:#888;margin-bottom:32px">Auto Emailer</p>
+
+    <label style="display:block;margin-bottom:16px">
+      <span style="font-size:13px;font-weight:600;color:#444;display:block;margin-bottom:6px">YOUR GMAIL ADDRESS</span>
+      <input id="sender" type="email" placeholder="you@gmail.com"
+        style="width:100%;padding:10px 14px;border:1.5px solid #e0e0e0;border-radius:8px;font-size:15px"/>
+    </label>
+
+    <label style="display:block;margin-bottom:16px">
+      <span style="font-size:13px;font-weight:600;color:#444;display:block;margin-bottom:6px">APP PASSWORD (no spaces)</span>
+      <input id="password" type="password" placeholder="16-character app password"
+        style="width:100%;padding:10px 14px;border:1.5px solid #e0e0e0;border-radius:8px;font-size:15px"/>
+    </label>
+
+    <label style="display:block;margin-bottom:16px">
+      <span style="font-size:13px;font-weight:600;color:#444;display:block;margin-bottom:6px">RECIPIENTS (comma separated, no spaces)</span>
+      <input id="recipients" type="text" placeholder="friend@email.com,boss@work.com"
+        style="width:100%;padding:10px 14px;border:1.5px solid #e0e0e0;border-radius:8px;font-size:15px"/>
+    </label>
+
+    <label style="display:block;margin-bottom:16px">
+      <span style="font-size:13px;font-weight:600;color:#444;display:block;margin-bottom:6px">SUBJECT</span>
+      <input id="subject" type="text" placeholder="Weekly Update"
+        style="width:100%;padding:10px 14px;border:1.5px solid #e0e0e0;border-radius:8px;font-size:15px"/>
+    </label>
+
+    <label style="display:block;margin-bottom:24px">
+      <span style="font-size:13px;font-weight:600;color:#444;display:block;margin-bottom:6px">MESSAGE BODY</span>
+      <textarea id="body" rows="4" placeholder="Type your email message here..."
+        style="width:100%;padding:10px 14px;border:1.5px solid #e0e0e0;border-radius:8px;font-size:15px;resize:vertical"></textarea>
+    </label>
+
+    <!-- Mode selector tabs -->
+    <div style="display:flex;gap:8px;margin-bottom:16px">
+      <button class="mode-btn active" data-mode="now" style="flex:1;padding:10px;border:1.5px solid #1a1a1a;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;background:#1a1a1a;color:white">
+        Send Now
+      </button>
+      <button class="mode-btn" data-mode="once" style="flex:1;padding:10px;border:1.5px solid #e0e0e0;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;background:white;color:#444">
+        Send Once At...
+      </button>
+      <button class="mode-btn" data-mode="recurring" style="flex:1;padding:10px;border:1.5px solid #e0e0e0;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;background:white;color:#444">
+        Recurring
+      </button>
+    </div>
+
+    <!-- Send Once panel -->
+    <div id="panel-once" style="display:none;background:#f9f9f9;border-radius:12px;padding:20px;margin-bottom:24px">
+      <p style="font-size:13px;color:#888;margin-bottom:14px">Pick a date and time — WillettBot will send it once and stop.</p>
+      <div style="display:flex;gap:12px">
+        <div style="flex:1">
+          <span style="font-size:12px;color:#888;display:block;margin-bottom:6px">DATE</span>
+          <input id="once-date" type="date"
+            style="width:100%;padding:10px 14px;border:1.5px solid #e0e0e0;border-radius:8px;font-size:15px;background:white"/>
+        </div>
+        <div style="flex:1">
+          <span style="font-size:12px;color:#888;display:block;margin-bottom:6px">TIME</span>
+          <input id="once-time" type="time"
+            style="width:100%;padding:10px 14px;border:1.5px solid #e0e0e0;border-radius:8px;font-size:15px;background:white"/>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recurring panel -->
+    <div id="panel-recurring" style="display:none;background:#f9f9f9;border-radius:12px;padding:20px;margin-bottom:24px">
+      <p style="font-size:13px;color:#888;margin-bottom:14px">Sends automatically on a repeating schedule while the app is open.</p>
+      <div style="display:flex;gap:12px">
+        <div style="flex:1">
+          <span style="font-size:12px;color:#888;display:block;margin-bottom:6px">DAY</span>
+          <select id="sched-day" style="width:100%;padding:10px 14px;border:1.5px solid #e0e0e0;border-radius:8px;font-size:15px;background:white">
+            <option value="daily">Every day</option>
+            <option value="monday">Every Monday</option>
+            <option value="tuesday">Every Tuesday</option>
+            <option value="wednesday">Every Wednesday</option>
+            <option value="thursday">Every Thursday</option>
+            <option value="friday" selected>Every Friday</option>
+            <option value="saturday">Every Saturday</option>
+            <option value="sunday">Every Sunday</option>
+          </select>
+        </div>
+        <div style="flex:1">
+          <span style="font-size:12px;color:#888;display:block;margin-bottom:6px">TIME</span>
+          <input id="sched-time" type="time" value="09:30"
+            style="width:100%;padding:10px 14px;border:1.5px solid #e0e0e0;border-radius:8px;font-size:15px;background:white"/>
+        </div>
+      </div>
+    </div>
+
+    <button id="action-btn" style="width:100%;padding:14px;background:#1a1a1a;color:white;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;margin-bottom:24px">
+      Send Now
+    </button>
+
+    <div id="status" style="padding:12px 16px;border-radius:8px;font-size:14px;display:none"></div>
+  </div>
+`
+
+// Set today's date as default for the once picker
+var today = new Date().toISOString().split('T')[0]
+document.getElementById('once-date').value = today
+
+// Set current time + 5 mins as default
+var now = new Date()
+now.setMinutes(now.getMinutes() + 5)
+var hh = String(now.getHours()).padStart(2, '0')
+var mm = String(now.getMinutes()).padStart(2, '0')
+document.getElementById('once-time').value = hh + ':' + mm
+
+// Tab switching
+var currentMode = 'now'
+document.querySelectorAll('.mode-btn').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    currentMode = this.getAttribute('data-mode')
+    document.querySelectorAll('.mode-btn').forEach(function(b) {
+      b.style.background = 'white'
+      b.style.color = '#444'
+      b.style.borderColor = '#e0e0e0'
+    })
+    this.style.background = '#1a1a1a'
+    this.style.color = 'white'
+    this.style.borderColor = '#1a1a1a'
+
+    document.getElementById('panel-once').style.display = currentMode === 'once' ? 'block' : 'none'
+    document.getElementById('panel-recurring').style.display = currentMode === 'recurring' ? 'block' : 'none'
+
+    var labels = { now: 'Send Now', once: 'Schedule One-Time Send', recurring: 'Set Recurring Schedule' }
+    document.getElementById('action-btn').textContent = labels[currentMode]
+  })
+})
+
+function getConfig() {
+  return {
+    sender: document.getElementById('sender').value.trim(),
+    password: document.getElementById('password').value.replace(/\s/g, ''),
+    recipients: document.getElementById('recipients').value.split(',').map(function(e) { return e.trim(); }).filter(function(e) { return e; }),
+    subject: document.getElementById('subject').value.trim(),
+    body: document.getElementById('body').value.trim(),
+    schedDay: document.getElementById('sched-day').value,
+    schedTime: document.getElementById('sched-time').value,
+    onceDate: document.getElementById('once-date').value,
+    onceTime: document.getElementById('once-time').value,
+    mode: currentMode
+  }
+}
+
+function showStatus(message, success) {
+  var el = document.getElementById('status')
+  el.style.display = 'block'
+  el.style.background = success ? '#e6f4ea' : '#fce8e6'
+  el.style.color = success ? '#137333' : '#c5221f'
+  el.textContent = message
+}
+
+document.getElementById('action-btn').addEventListener('click', function() {
+  var config = getConfig()
+  if (!config.sender || !config.password || !config.recipients[0]) {
+    showStatus('Please fill in sender, password, and recipients.', false)
+    return
+  }
+
+  if (currentMode === 'now') {
+    showStatus('Sending...', true)
+    ipcRenderer.send('run-emailer', config)
+
+  } else if (currentMode === 'once') {
+    if (!config.onceDate || !config.onceTime) {
+      showStatus('Please pick a date and time.', false)
+      return
+    }
+    showStatus('Scheduled! Will send once on ' + config.onceDate + ' at ' + config.onceTime + ' then stop.', true)
+    ipcRenderer.send('run-emailer', config)
+
+  } else if (currentMode === 'recurring') {
+    var sel = document.getElementById('sched-day')
+    var dayLabel = sel.options[sel.selectedIndex].text
+    showStatus('Recurring schedule set! Sending ' + dayLabel + ' at ' + config.schedTime + ' while app is open.', true)
+    ipcRenderer.send('run-emailer', config)
+  }
+})
+
+ipcRenderer.on('emailer-result', function(event, result) {
+  showStatus(result.success ? 'Email sent successfully!' : 'Error: ' + result.message, result.success)
+})
+===================================================================
+FILE: clicker.py
+===================================================================
+
+# Copyright (c) 2026 Myles Willett. All rights reserved.
+# Proprietary and confidential. No reproduction, distribution, or use
+# without express written permission.
+
+import sys
+import json
+import time
+import threading
+import traceback
+
+# pyautogui must import for ANYTHING to work. Emit a clean one-line
+# JSON error so both the capture-position path and the start path surface
+# a real message instead of a silent exit-code-1.
+try:
+    import pyautogui
+    pyautogui.FAILSAFE = True
+    pyautogui.PAUSE = 0
+except Exception as _e:
+    print(json.dumps({
+        'error': 'pyautogui import failed: ' + str(_e) +
+                 ". Install it with:  python3 -m pip install --user pyautogui"
+    }), flush=True)
+    sys.exit(0)
+
+# NOTE: pynput used to live here to listen for the Esc stop-hotkey. We took
+# it out because (a) on macOS it requires a separate Input Monitoring grant,
+# which was crashing the clicker mid-run with 'This process is not trusted'
+# on installs where only Accessibility was granted, and (b) main.js now
+# registers Esc as a system-wide globalShortcut which works without any
+# macOS permission at all. The clicker is now permission-only dependent on
+# Accessibility, which pyautogui needs for CGEventPost.
+
+
+def emit(event_dict):
+    """Print one JSON object per line to stdout for the Electron parent to consume."""
+    try:
+        print(json.dumps(event_dict), flush=True)
+    except Exception:
+        # Last-resort: never let a logging error take down the clicker.
+        pass
+
+
+def get_position():
+    """Print current mouse X,Y as a single JSON line and exit."""
+    try:
+        x, y = pyautogui.position()
+        emit({'x': int(x), 'y': int(y)})
+    except Exception as e:
+        emit({'error': str(e)})
+
+
+def check_accessibility():
+    """Returns True iff THIS Python process is allowed to post mouse/keyboard
+    events via the Quartz event tap. Without this grant, pyautogui.click()
+    silently drops the event — no exception, no log — which looks exactly
+    like 'the clicker says it clicked but nothing happened'. We probe up-
+    front so we can surface a real error instead of lying to the user.
+    Returns None on weird configs (e.g. non-macOS) — caller treats as ok."""
+    try:
+        import ctypes, ctypes.util
+        lib = ctypes.CDLL(ctypes.util.find_library('ApplicationServices'))
+        lib.AXIsProcessTrusted.restype = ctypes.c_bool
+        return bool(lib.AXIsProcessTrusted())
+    except Exception:
+        return None
+
+
+def run_clicker(config):
+    """Loop-click at (x, y) every interval seconds until stopped by hotkey,
+    click-limit, time-limit, failsafe, or fatal error."""
+    try:
+        x = int(config.get('x', 0))
+        y = int(config.get('y', 0))
+        interval = float(config.get('interval', 1.0))
+        button = config.get('button', 'left')
+        double_click = bool(config.get('doubleClick', False))
+        max_clicks = int(config.get('maxClicks', 0) or 0)
+        max_duration = float(config.get('maxDuration', 0) or 0)  # seconds
+        stop_key_name = str(config.get('stopKey', 'esc'))
+    except Exception as e:
+        emit({'event': 'error', 'message': 'Bad config: ' + str(e)})
+        return
+
+    # Clamp to safe floor so we never spin the CPU.
+    if interval < 0.01:
+        interval = 0.01
+    if button not in ('left', 'right', 'middle'):
+        button = 'left'
+
+    # Intentionally NOT running the pre-flight accessibility probe anymore.
+    # The old moveRel(1px) ground-truth test was too noisy — it false-positived
+    # on cursors near screen edges, across display-scaling boundaries, and on
+    # some multi-monitor setups, which meant users with perfectly working
+    # permissions saw the "Reset macOS permissions" card every time they
+    # pressed Start. If the grant is genuinely missing the user will see the
+    # clicker counter increment with no mouse movement — and the "Clicks not
+    # working? Fix permissions" link under the Start/Stop buttons is always
+    # one click away.
+
+    # stop_event is still useful — SIGTERM handler sets it, and the Electron
+    # globalShortcut sends SIGTERM via scriptProc.kill() when the user hits
+    # the global Esc stop-hotkey. No in-process listener needed anymore.
+    stop_event = threading.Event()
+
+    def _on_sigterm(signum, frame):
+        stop_event.set()
+    try:
+        import signal
+        signal.signal(signal.SIGTERM, _on_sigterm)
+        signal.signal(signal.SIGINT, _on_sigterm)
+    except Exception:
+        pass  # non-posix — fall through to the while-loop default
+
+    emit({
+        'event': 'start',
+        'x': x, 'y': y,
+        'interval': interval,
+        'button': button,
+        'doubleClick': double_click,
+        'maxClicks': max_clicks,
+        'maxDuration': max_duration,
+        'stopKey': stop_key_name,
+        'hotkeyActive': True  # global Esc lives in main.js now
+    })
+
+    count = 0
+    start_time = time.time()
+    ended_cleanly = False
+
+    try:
+        while not stop_event.is_set():
+            # Time-limit check BEFORE clicking so we honor the cutoff exactly.
+            if max_duration > 0 and (time.time() - start_time) >= max_duration:
+                emit({'event': 'done', 'count': count, 'reason': 'time-limit'})
+                ended_cleanly = True
+                break
+
+            # The click itself — most likely failure point, catch per-iteration.
+            try:
+                if double_click:
+                    pyautogui.doubleClick(x=x, y=y, button=button)
+                else:
+                    pyautogui.click(x=x, y=y, button=button)
+            except pyautogui.FailSafeException:
+                emit({'event': 'failsafe', 'count': count})
+                ended_cleanly = True
+                break
+            except Exception as click_err:
+                emit({
+                    'event': 'error',
+                    'count': count,
+                    'message': 'Click failed: ' + str(click_err) +
+                               '. If this is the first run, grant Accessibility permission in '
+                               'System Settings → Privacy & Security → Accessibility, then restart the app.'
+                })
+                ended_cleanly = True
+                break
+
+            count += 1
+            emit({'event': 'click', 'count': count})
+
+            # Click-limit check.
+            if max_clicks > 0 and count >= max_clicks:
+                emit({'event': 'done', 'count': count, 'reason': 'click-limit'})
+                ended_cleanly = True
+                break
+
+            # Sleep in small slices so the hotkey / time-limit can interrupt
+            # a long interval without waiting the full duration.
+            remaining = interval
+            slice_s = 0.05
+            while remaining > 0 and not stop_event.is_set():
+                if max_duration > 0 and (time.time() - start_time) >= max_duration:
+                    break
+                t = slice_s if remaining > slice_s else remaining
+                time.sleep(t)
+                remaining -= t
+
+        # Exited the while loop — figure out why.
+        if not ended_cleanly:
+            if stop_event.is_set():
+                emit({'event': 'stopped', 'count': count, 'reason': 'hotkey'})
+
+    except KeyboardInterrupt:
+        emit({'event': 'stopped', 'count': count, 'reason': 'signal'})
+    except Exception as e:
+        emit({
+            'event': 'error',
+            'count': count,
+            'message': str(e),
+            'trace': traceback.format_exc()
+        })
+
+
+if __name__ == '__main__':
+    try:
+        if len(sys.argv) < 2:
+            emit({'event': 'error', 'message': 'Missing config path or command.'})
+            sys.exit(0)
+
+        arg = sys.argv[1]
+
+        if arg == '--get-position':
+            get_position()
+            sys.exit(0)
+
+        try:
+            with open(arg, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+        except Exception as e:
+            emit({'event': 'error', 'message': 'Could not read config: ' + str(e)})
+            sys.exit(0)
+
+        run_clicker(config)
+    except Exception as e:
+        emit({'event': 'error', 'message': 'Fatal: ' + str(e), 'trace': traceback.format_exc()})
+
+    # Always exit 0 — we report errors via JSON events, not exit codes, so the
+    # Electron parent can display a meaningful message instead of "exit code 1".
+    sys.exit(0)
+
+===================================================================
+FILE: emailer.py
+===================================================================
+
+# Copyright (c) 2026 Myles Willett. All rights reserved.
+# Proprietary and confidential. No reproduction, distribution, or use
+# without express written permission.
+
+import smtplib
+import sys
+import json
+import schedule
+import time
+from datetime import datetime
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+def clean(text):
+    text = text.replace('\xa0', ' ')
+    text = text.replace('\u200b', '')
+    text = text.replace('\u2019', "'")
+    text = text.replace('\u2018', "'")
+    text = text.replace('\u201c', '"')
+    text = text.replace('\u201d', '"')
+    text = text.replace('\u2013', '-')
+    text = text.replace('\u2014', '-')
+    return text.encode('ascii', errors='replace').decode('ascii')
+
+def send_email(config):
+    try:
+        sender     = clean(config['sender'])
+        recipients = [clean(r) for r in config['recipients']]
+        subject    = clean(config['subject'])
+        body       = clean(config['body'])
+        password   = config['password'].replace(' ', '')
+
+        msg = MIMEMultipart()
+        msg['From']    = sender
+        msg['To']      = ', '.join(recipients)
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain', 'utf-8'))
+
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(sender, password)
+            server.sendmail(sender, recipients, msg.as_string())
+
+        print('Email sent successfully!')
+
+    except Exception as e:
+        print(f'Error: {str(e)}', file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == '__main__':
+    config_file = sys.argv[1]
+    with open(config_file, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+
+    mode = config.get('mode', 'now')
+
+    if mode == 'now':
+        send_email(config)
+
+    elif mode == 'once':
+        # Send exactly once at the specified date and time then exit
+        once_date = config.get('onceDate')
+        once_time = config.get('onceTime')
+        send_dt = datetime.strptime(f'{once_date} {once_time}', '%Y-%m-%d %H:%M')
+        print(f'Waiting to send once at {send_dt}...')
+        while True:
+            if datetime.now() >= send_dt:
+                send_email(config)
+                break
+            time.sleep(15)
+
+    elif mode == 'recurring':
+        day      = config.get('schedDay', 'friday')
+        time_str = config.get('schedTime', '09:30')
+
+        if day == 'daily':
+            schedule.every().day.at(time_str).do(send_email, config)
+        elif day == 'monday':
+            schedule.every().monday.at(time_str).do(send_email, config)
+        elif day == 'tuesday':
+            schedule.every().tuesday.at(time_str).do(send_email, config)
+        elif day == 'wednesday':
+            schedule.every().wednesday.at(time_str).do(send_email, config)
+        elif day == 'thursday':
+            schedule.every().thursday.at(time_str).do(send_email, config)
+        elif day == 'friday':
+            schedule.every().friday.at(time_str).do(send_email, config)
+        elif day == 'saturday':
+            schedule.every().saturday.at(time_str).do(send_email, config)
+        elif day == 'sunday':
+            schedule.every().sunday.at(time_str).do(send_email, config)
+
+        print(f'Recurring schedule set for {day} at {time_str}')
+        while True:
+            schedule.run_pending()
+            time.sleep(30)
+===================================================================
+FILE: permcheck.py
+===================================================================
+
+# Copyright (c) 2026 Myles Willett. All rights reserved.
+# Proprietary and confidential. No reproduction, distribution, or use
+# without express written permission.
+
+"""
+WillettBot Permission Self-Check
+================================
+macOS tracks Accessibility / Automation / Input Monitoring permissions PER
+binary (by code signature, or by SHA hash for unsigned binaries). Our bundled
+Python is a separate unsigned binary from the Electron shell — so even if the
+user has already granted those permissions to WillettBot.app, the bundled
+Python needs its own grants for pyautogui clicks, pynput hotkeys, and osascript
+control of Finder / System Events to actually work.
+
+Without this check, those denials are INVISIBLE:
+  - pyautogui.click() silently drops the event (no exception)
+  - pynput.Listener starts but receives no events
+  - osascript returns error -1743 which gets swallowed
+
+This script probes each permission and returns a JSON dict so the Electron
+parent can show a setup banner. It's intentionally side-effect-free — no
+clicks, no keystrokes, no lingering listeners.
+
+Output format (one JSON line on stdout):
+  {
+    "accessibility":    true | false | null,   # pyautogui clicks
+    "automation":       true | false | null,   # osascript → System Events
+    "input_monitoring": true | false | null,   # pynput hotkey listener
+    "python_path":      "/full/path/to/this/python3"
+  }
+
+`null` means we couldn't determine — treated as "probably ok" by the UI so
+we don't pester the user on a weird config.
+"""
+import json
+import sys
+import ctypes
+import ctypes.util
+import subprocess
+import threading
+import time
+
+
+def check_accessibility():
+    """AXIsProcessTrusted() — returns true iff this process can synthesize
+    mouse / keyboard events via the Quartz event tap (what pyautogui uses).
+    No prompt shown, no side effects.
+
+    IMPORTANT: on unsigned / ad-hoc-signed binaries (which is everything we
+    ship until we get a Developer ID), this returns FALSE even when the
+    permission is granted and clicks actually work. It's a code-signature
+    vs. TCC-hash mismatch thing we can't fix client-side. So we:
+      - Return True if the call succeeds (that result is reliable).
+      - Return None (inconclusive) otherwise. Upstream UI treats None as
+        'probably ok' and won't cry wolf.
+    If the grant is genuinely missing the user sees clicks silently no-op
+    at runtime, and the 'Clicks not working? Fix permissions' link is
+    always one tap away."""
+    try:
+        lib = ctypes.CDLL(ctypes.util.find_library('ApplicationServices'))
+        lib.AXIsProcessTrusted.restype = ctypes.c_bool
+        if bool(lib.AXIsProcessTrusted()):
+            return True
+        return None  # don't claim denied — AXIsProcessTrusted false-negatives
+    except Exception:
+        return None
+
+
+def check_automation():
+    """Harmless osascript call to System Events. If macOS rejects with -1743
+    (errAEEventNotPermitted), Automation permission is denied. Anything else
+    (success OR unrelated error) is treated as 'probably ok'."""
+    try:
+        r = subprocess.run(
+            ['osascript', '-e',
+             'tell application "System Events" to get name of first '
+             'application process whose frontmost is true'],
+            capture_output=True, text=True, timeout=3
+        )
+        if r.returncode == 0:
+            return True
+        stderr_low = (r.stderr or '').lower()
+        if ('-1743' in stderr_low
+                or 'not authorized to send apple events' in stderr_low
+                or 'not allowed assistive access' in stderr_low):
+            return False
+        return None  # Unrelated error — don't claim denied
+    except Exception:
+        return None
+
+
+def check_input_monitoring():
+    """Start a pynput keyboard listener briefly. On macOS, without Input
+    Monitoring the listener either raises during init or the NSEvent tap
+    silently never fires (but the listener's .running flag is still True).
+    We can at least catch the init-error case. For the silent-fail case we
+    return None (inconclusive) rather than lying.
+
+    Importing pynput is cheap; starting a listener briefly is the only way
+    to probe the tap."""
+    try:
+        from pynput import keyboard as _kb
+    except Exception:
+        return None
+
+    started = threading.Event()
+    errored = [None]
+
+    def _target():
+        try:
+            listener = _kb.Listener(on_press=lambda k: None)
+            listener.start()
+            started.set()
+            # Give it a moment — if the Cocoa event tap rejects us, pynput
+            # typically logs to stderr but doesn't raise. We can't detect
+            # that from here, so we just stop and report inconclusive.
+            time.sleep(0.15)
+            try:
+                listener.stop()
+            except Exception:
+                pass
+        except Exception as e:
+            errored[0] = str(e)
+            started.set()
+
+    t = threading.Thread(target=_target, daemon=True)
+    t.start()
+    started.wait(timeout=2.0)
+    if errored[0]:
+        return False
+    # Inconclusive — start succeeded but we can't tell if taps will fire.
+    # Treat as "probably ok"; downstream UI doesn't raise a warning on null.
+    return None
+
+
+def main():
+    out = {
+        'accessibility':    check_accessibility(),
+        'automation':       check_automation(),
+        'input_monitoring': check_input_monitoring(),
+        'python_path':      sys.executable,
+    }
+    print(json.dumps(out), flush=True)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as e:
+        print(json.dumps({'error': str(e)}), flush=True)
+    sys.exit(0)
+
+===================================================================
+FILE: licensing/keygen.js
+===================================================================
+
+#!/usr/bin/env node
+// Copyright (c) 2026 Myles Willett. All rights reserved.
+// Proprietary and confidential. No reproduction, distribution, or use
+// without express written permission.
+//
+// WillettBot license tooling — Ed25519-signed activation keys.
+//
+// Subcommands:
+//   init
+//     Generates a keypair in this folder:
+//       public_key.pem   — bundled with the app (safe to ship)
+//       private_key.pem  — stays on your machine / server; git-ignore it!
+//     Refuses to overwrite if either file already exists unless --force.
+//
+//   mint --email <addr> [--days <n>] [--tier <name>] [--note <text>]
+//     Prints a single activation key of the form:
+//       willettbot-<base64url(payload)>.<base64url(sig)>
+//     Payload is JSON: { email, issued (ISO), expires (ISO), tier, note?, id }.
+//     Default --days 90, default --tier beta.
+//     Verify round-trip is sanity-checked before printing.
+//
+//   verify <key>
+//     Local sanity-check: prints payload + "ok" or the validation error.
+//
+// Usage (from /.../willettbot/licensing):
+//   node keygen.js init
+//   node keygen.js mint --email me@example.com --days 120 --tier beta
+//   node keygen.js verify willettbot-...
+//
+// No external deps — uses Node's built-in `crypto`.
+
+const fs = require('fs')
+const path = require('path')
+const crypto = require('crypto')
+
+const HERE = __dirname
+const PUB_PATH  = path.join(HERE, 'public_key.pem')
+const PRIV_PATH = path.join(HERE, 'private_key.pem')
+
+const PREFIX = 'willettbot-'
+
+// ── arg parsing ────────────────────────────────────────────────────────────
+function parseArgs(argv) {
+  const sub = argv[2]
+  const rest = argv.slice(3)
+  const flags = {}
+  const positional = []
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i]
+    if (a.startsWith('--')) {
+      const key = a.slice(2)
+      const next = rest[i + 1]
+      if (next === undefined || next.startsWith('--')) {
+        flags[key] = true
+      } else {
+        flags[key] = next
+        i++
+      }
+    } else {
+      positional.push(a)
+    }
+  }
+  return { sub, flags, positional }
+}
+
+// ── base64url helpers (RFC 4648) ───────────────────────────────────────────
+function b64urlEncode(buf) {
+  return Buffer.from(buf).toString('base64')
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+function b64urlDecode(s) {
+  s = String(s).replace(/-/g, '+').replace(/_/g, '/')
+  while (s.length % 4) s += '='
+  return Buffer.from(s, 'base64')
+}
+
+// ── subcommand: init ───────────────────────────────────────────────────────
+function cmdInit(flags) {
+  const force = !!flags.force
+  if ((fs.existsSync(PUB_PATH) || fs.existsSync(PRIV_PATH)) && !force) {
+    console.error('keys already exist in', HERE)
+    console.error('  ', PUB_PATH)
+    console.error('  ', PRIV_PATH)
+    console.error('pass --force to overwrite (this invalidates every key minted with the old pair).')
+    process.exit(2)
+  }
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519')
+  const pubPem  = publicKey.export({ type: 'spki',  format: 'pem' })
+  const privPem = privateKey.export({ type: 'pkcs8', format: 'pem' })
+  fs.writeFileSync(PUB_PATH,  pubPem,  { mode: 0o644 })
+  fs.writeFileSync(PRIV_PATH, privPem, { mode: 0o600 })
+  console.log('wrote', PUB_PATH)
+  console.log('wrote', PRIV_PATH, '(keep this secret!)')
+  console.log('Add licensing/private_key.pem to .gitignore.')
+}
+
+// ── subcommand: mint ───────────────────────────────────────────────────────
+function cmdMint(flags) {
+  if (!fs.existsSync(PRIV_PATH)) {
+    console.error('no private key found at', PRIV_PATH)
+    console.error('run `node keygen.js init` first.')
+    process.exit(2)
+  }
+  const email = flags.email
+  if (!email || typeof email !== 'string') {
+    console.error('--email <addr> is required')
+    process.exit(2)
+  }
+  const days = Number(flags.days || 90)
+  if (!Number.isFinite(days) || days <= 0) {
+    console.error('--days must be a positive number')
+    process.exit(2)
+  }
+  const tier = (typeof flags.tier === 'string' && flags.tier) || 'beta'
+  const note = typeof flags.note === 'string' ? flags.note : undefined
+
+  const issued  = new Date()
+  const expires = new Date(issued.getTime() + days * 24 * 60 * 60 * 1000)
+  const id = crypto.randomBytes(6).toString('hex')
+
+  const payload = {
+    email: email.trim().toLowerCase(),
+    tier,
+    issued:  issued.toISOString(),
+    expires: expires.toISOString(),
+    id,
+  }
+  if (note) payload.note = note
+
+  const privPem = fs.readFileSync(PRIV_PATH, 'utf8')
+  const priv = crypto.createPrivateKey(privPem)
+
+  const payloadBuf = Buffer.from(JSON.stringify(payload), 'utf8')
+  const sig = crypto.sign(null, payloadBuf, priv)   // Ed25519: algo = null
+
+  const key = PREFIX + b64urlEncode(payloadBuf) + '.' + b64urlEncode(sig)
+
+  // Round-trip self-check so we never ship a bad key.
+  const pubPem = fs.readFileSync(PUB_PATH, 'utf8')
+  const pub = crypto.createPublicKey(pubPem)
+  const ok = crypto.verify(null, payloadBuf, pub, sig)
+  if (!ok) {
+    console.error('internal error: minted key failed its own verification.')
+    process.exit(3)
+  }
+
+  console.log('--- activation key ---')
+  console.log(key)
+  console.log('---')
+  console.log('email:   ', payload.email)
+  console.log('tier:    ', payload.tier)
+  console.log('issued:  ', payload.issued)
+  console.log('expires: ', payload.expires)
+  console.log('id:      ', payload.id)
+  if (note) console.log('note:    ', note)
+}
+
+// ── subcommand: verify ─────────────────────────────────────────────────────
+// Exposed as a library function too so main.js can reuse it.
+function verifyKey(keyStr, pubPem) {
+  if (typeof keyStr !== 'string' || !keyStr.startsWith(PREFIX)) {
+    return { ok: false, reason: 'bad format (missing prefix)' }
+  }
+  const body = keyStr.slice(PREFIX.length)
+  const dot = body.indexOf('.')
+  if (dot < 1 || dot === body.length - 1) {
+    return { ok: false, reason: 'bad format (missing signature)' }
+  }
+  const payloadB64 = body.slice(0, dot)
+  const sigB64     = body.slice(dot + 1)
+  let payloadBuf, sigBuf
+  try {
+    payloadBuf = b64urlDecode(payloadB64)
+    sigBuf     = b64urlDecode(sigB64)
+  } catch (e) {
+    return { ok: false, reason: 'bad base64' }
+  }
+  let payload
+  try {
+    payload = JSON.parse(payloadBuf.toString('utf8'))
+  } catch (e) {
+    return { ok: false, reason: 'payload is not valid JSON' }
+  }
+  let pub
+  try {
+    pub = crypto.createPublicKey(pubPem)
+  } catch (e) {
+    return { ok: false, reason: 'public key unreadable: ' + e.message }
+  }
+  let sigOk = false
+  try {
+    sigOk = crypto.verify(null, payloadBuf, pub, sigBuf)
+  } catch (e) {
+    return { ok: false, reason: 'verify threw: ' + e.message }
+  }
+  if (!sigOk) return { ok: false, reason: 'signature does not match' }
+  if (!payload.expires) return { ok: false, reason: 'payload missing expires' }
+  const exp = Date.parse(payload.expires)
+  if (!Number.isFinite(exp)) return { ok: false, reason: 'payload expires unparseable' }
+  if (exp < Date.now()) return { ok: false, reason: 'key expired', expired: true, payload }
+  return { ok: true, payload }
+}
+
+function cmdVerify(positional) {
+  const key = positional[0]
+  if (!key) { console.error('usage: verify <key>'); process.exit(2) }
+  if (!fs.existsSync(PUB_PATH)) {
+    console.error('no public key at', PUB_PATH)
+    process.exit(2)
+  }
+  const pubPem = fs.readFileSync(PUB_PATH, 'utf8')
+  const res = verifyKey(key, pubPem)
+  console.log(JSON.stringify(res, null, 2))
+  process.exit(res.ok ? 0 : 1)
+}
+
+// ── main ───────────────────────────────────────────────────────────────────
+if (require.main === module) {
+  const { sub, flags, positional } = parseArgs(process.argv)
+  if (sub === 'init')         cmdInit(flags)
+  else if (sub === 'mint')    cmdMint(flags)
+  else if (sub === 'verify')  cmdVerify(positional)
+  else {
+    console.error('usage:')
+    console.error('  node keygen.js init [--force]')
+    console.error('  node keygen.js mint --email <addr> [--days <n>] [--tier <name>] [--note <text>]')
+    console.error('  node keygen.js verify <key>')
+    process.exit(2)
+  }
+}
+
+module.exports = { verifyKey, PREFIX, b64urlEncode, b64urlDecode }
+
+===================================================================
+FILE: scripts-build/after-pack.js
+===================================================================
+
+// Copyright (c) 2026 Myles Willett. All rights reserved.
+// Proprietary and confidential. No reproduction, distribution, or use
+// without express written permission.
+//
+// electron-builder afterPack hook.
+//
+// Two things codesign on macOS Sequoia (15.x / Darwin 24) hates:
+//
+//   1. Extended attributes / resource forks / AppleDouble / FinderInfo.
+//      These need to be stripped. `xattr -cr` + `ditto --norsrc --noextattr
+//      --noacl` covers visible cases.
+//
+//   2. The AD-HOC SIGNATURES that Electron's prebuilt helper binaries
+//      already carry. Codesign 15.x is stricter about resigning pre-signed
+//      helpers: it sometimes reads leftover signature metadata and
+//      complains with "resource fork, Finder information, or similar
+//      detritus not allowed" — even when the file has zero xattrs and zero
+//      FinderInfo. The fix is to `codesign --remove-signature` every
+//      binary BEFORE electron-builder runs its own signing pass.
+//
+// Order of operations:
+//   1. Delete AppleDouble sidecars + .DS_Store.
+//   2. xattr -cr (strip extended attributes).
+//   3. ditto --norsrc --noextattr --noacl round-trip (strips forks/ACLs).
+//   4. codesign --remove-signature on every Mach-O binary (strips adhoc sigs).
+//   5. xattr -cr again (removing signatures sometimes leaves artifacts).
+//   6. Diagnostic dump.
+
+const { execSync } = require('child_process')
+const path = require('path')
+const fs = require('fs')
+const os = require('os')
+
+function run(cmd) {
+  return execSync(cmd, { stdio: 'inherit' })
+}
+
+function runQuiet(cmd) {
+  try {
+    return execSync(cmd, { stdio: ['ignore', 'pipe', 'pipe'] }).toString()
+  } catch (e) {
+    return ''
+  }
+}
+
+function dumpXattrs(label, filePath) {
+  if (!fs.existsSync(filePath)) return
+  const xattrs = runQuiet(`xattr -l "${filePath}"`).trim()
+  const info = runQuiet(`GetFileInfo -aE "${filePath}" 2>/dev/null`).trim()
+  const sig = runQuiet(`codesign -dv "${filePath}" 2>&1 | head -3`).trim()
+  console.log(`[afterPack] ${label}:`)
+  console.log(`    xattrs: ${xattrs || '(none)'}`)
+  console.log(`    FinderInfo: ${info || '0'}`)
+  console.log(`    codesign: ${sig.split('\n').join(' | ') || '(unsigned)'}`)
+}
+
+exports.default = async function afterPack(context) {
+  const appName = context.packager.appInfo.productFilename + '.app'
+  const appPath = path.join(context.appOutDir, appName)
+
+  if (!fs.existsSync(appPath)) {
+    console.warn('[afterPack] .app not found at', appPath, '— skipping')
+    return
+  }
+
+  const mainExec  = path.join(appPath, 'Contents/MacOS/WillettBot')
+  const gpuHelper = path.join(appPath, 'Contents/Frameworks/WillettBot Helper (GPU).app/Contents/MacOS/WillettBot Helper (GPU)')
+
+  console.log('[afterPack] Scrubbing:', appPath)
+
+  try {
+    // 1. AppleDouble / .DS_Store cleanup.
+    try { run(`dot_clean -m "${appPath}"`) } catch (_) {}
+    run(`find "${appPath}" -name '._*' -type f -delete`)
+    run(`find "${appPath}" -name '.DS_Store' -type f -delete`)
+
+    // 2. xattr -cr on the whole tree.
+    run(`xattr -cr "${appPath}"`)
+
+    // 3. ditto round-trip (strips resource forks and ACLs).
+    const tmpDir = path.join(os.tmpdir(), 'wb-scrub-' + Date.now())
+    console.log('[afterPack] ditto scrub ->', tmpDir)
+    run(`ditto --norsrc --noextattr --noacl "${appPath}" "${tmpDir}"`)
+    run(`rm -rf "${appPath}"`)
+    run(`ditto --norsrc --noextattr --noacl "${tmpDir}" "${appPath}"`)
+    run(`rm -rf "${tmpDir}"`)
+
+    console.log('[afterPack] === post-ditto (pre-sig-strip) ===')
+    dumpXattrs('main exec', mainExec)
+    dumpXattrs('GPU helper', gpuHelper)
+
+    // 4. Strip existing ad-hoc signatures from every Mach-O binary.
+    //    Codesign 15.x rejects pre-signed helpers in "resigning" flows.
+    //    Removing the old signature first gives us a clean slate.
+    console.log('[afterPack] Stripping existing signatures from all binaries...')
+    const stripScript = `
+      set +e
+      find "${appPath}" -type f -print0 | while IFS= read -r -d '' f; do
+        # Only touch Mach-O binaries (skip plain text/images/etc).
+        if file -b "$f" 2>/dev/null | grep -qE 'Mach-O|universal binary'; then
+          codesign --remove-signature "$f" 2>/dev/null
+        fi
+      done
+      # Also strip from the .app bundles themselves (helpers are bundles).
+      find "${appPath}" -name '*.app' -print0 | while IFS= read -r -d '' b; do
+        codesign --remove-signature "$b" 2>/dev/null
+      done
+      codesign --remove-signature "${appPath}" 2>/dev/null
+      true
+    `
+    execSync(stripScript, { stdio: 'inherit', shell: '/bin/bash' })
+
+    // 5. Final xattr sweep (removing sigs can leave _CodeSignature dirs with xattrs).
+    run(`xattr -cr "${appPath}"`)
+    run(`find "${appPath}" -name '_CodeSignature' -type d -exec rm -rf {} + 2>/dev/null || true`)
+    run(`find "${appPath}" -name 'CodeResources' -type f -delete 2>/dev/null || true`)
+
+    console.log('[afterPack] === post-sig-strip ===')
+    dumpXattrs('main exec', mainExec)
+    dumpXattrs('GPU helper', gpuHelper)
+
+    console.log('[afterPack] Cleanup complete.')
+  } catch (e) {
+    console.error('[afterPack] Cleanup failed:', e.message)
+    throw e
+  }
+}
+
+===================================================================
+FILE: index.html
+===================================================================
+
+<!DOCTYPE html>
+<!--
+  Copyright (c) 2026 Myles Willett. All rights reserved.
+  Proprietary and confidential. No reproduction, distribution, or use
+  without express written permission.
+-->
+<html>
+  <head>
+    <meta charset="UTF-8"/>
+    <title>WillettBot</title>
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body { font-family: -apple-system, sans-serif; background: #f5f5f5; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="renderer.js"></script>
+  </body>
+</html>
+===================================================================
+FILE: toast.html
+===================================================================
+
+<!doctype html>
+<!--
+  Copyright (c) 2026 Myles Willett. All rights reserved.
+  Proprietary and confidential. No reproduction, distribution, or use
+  without express written permission.
+-->
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>WillettBot</title>
+  <style>
+    /* ── Minimal macOS-style top-right confirmation toast ─────────────
+       No chrome, no icon, no app header. Just a message + two buttons.
+       Sits inside a frameless, transparent Electron BrowserWindow. */
+    :root {
+      --bg: rgba(40, 40, 44, 0.94);
+      --border: rgba(255, 255, 255, 0.10);
+      --text: #f6f6f7;
+      --btn-grey-bg: rgba(255, 255, 255, 0.10);
+      --btn-grey-hover: rgba(255, 255, 255, 0.18);
+      --btn-blue: #2a6df4;
+      --btn-blue-hover: #3e80ff;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: rgba(252, 252, 253, 0.97);
+        --border: rgba(0, 0, 0, 0.06);
+        --text: #1a1a1c;
+        --btn-grey-bg: rgba(0, 0, 0, 0.06);
+        --btn-grey-hover: rgba(0, 0, 0, 0.10);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      background: transparent;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      color: var(--text);
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+      cursor: default;
+    }
+
+    .toast {
+      position: fixed;
+      top: 10px; right: 10px; left: 10px; bottom: 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35),
+                  0 2px 8px rgba(0, 0, 0, 0.20);
+      backdrop-filter: blur(24px) saturate(140%);
+      -webkit-backdrop-filter: blur(24px) saturate(140%);
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 12px;
+      opacity: 0;
+      transform: translateX(14px);
+      animation: slidein 0.20s ease-out forwards;
+    }
+    @keyframes slidein {
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    .message {
+      font-size: 13px;
+      line-height: 1.40;
+      color: var(--text);
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow: auto;
+      letter-spacing: -0.005em;
+      flex: 1;
+    }
+    .message::-webkit-scrollbar { width: 4px; }
+    .message::-webkit-scrollbar-thumb { background: var(--btn-grey-bg); border-radius: 2px; }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      flex: none;
+    }
+    .btn {
+      padding: 7px 16px;
+      font: inherit; font-size: 13px; font-weight: 600;
+      border-radius: 8px;
+      border: 0;
+      color: var(--text);
+      cursor: pointer;
+      letter-spacing: -0.005em;
+    }
+    .btn.grey { background: var(--btn-grey-bg); }
+    .btn.grey:hover { background: var(--btn-grey-hover); }
+    .btn.blue { background: var(--btn-blue); color: white; }
+    .btn.blue:hover { background: var(--btn-blue-hover); }
+  </style>
+</head>
+<body>
+  <div class="toast">
+    <div class="message" id="msg">…</div>
+    <div class="actions">
+      <button class="btn grey" id="cancel-btn">Wait</button>
+      <button class="btn blue" id="continue-btn">Send</button>
+    </div>
+  </div>
+
+  <script>
+    const { ipcRenderer } = require('electron')
+
+    ipcRenderer.on('toast-init', (e, payload) => {
+      document.getElementById('msg').textContent = payload.message || ''
+      if (payload.confirmLabel) {
+        document.getElementById('continue-btn').textContent = payload.confirmLabel
+      }
+      if (payload.cancelLabel) {
+        document.getElementById('cancel-btn').textContent = payload.cancelLabel
+      }
+      // Primary-button focus so Enter = confirm, Esc = cancel.
+      setTimeout(() => { document.getElementById('continue-btn').focus() }, 40)
+    })
+
+    function respond(cancelled) { ipcRenderer.send('toast-response', { cancelled }) }
+    document.getElementById('continue-btn').addEventListener('click', () => respond(false))
+    document.getElementById('cancel-btn').addEventListener('click', () => respond(true))
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter')  { e.preventDefault(); respond(false) }
+      if (e.key === 'Escape') { e.preventDefault(); respond(true) }
+    })
+  </script>
+</body>
+</html>

@@ -1472,11 +1472,11 @@ ipcMain.handle('write-script', async (event, payload) => {
 })
 
 // Preset (built-in) scripts that ship with WillettBot. The hub presents these
-// as first-class entry points (Send Gmail tile, Auto Clicker tile) and the
-// recorder seeds them on first launch. Deleting one would orphan the hub
-// tile and break the tour, so we lock them at the IPC layer too — defense
-// in depth alongside the UI hiding the Delete button.
-const PRESET_SCRIPTS = new Set(['send_gmail.json'])
+// as first-class entry points (Send Gmail tile, Greet tile, Auto Clicker
+// tile) and the recorder seeds them on first launch. Deleting one would
+// orphan the hub tile and break the tour, so we lock them at the IPC layer
+// too — defense in depth alongside the UI hiding the Delete button.
+const PRESET_SCRIPTS = new Set(['send_gmail.json', 'example_greet.json'])
 
 // ── SCRIPTS: delete a script ──
 ipcMain.handle('delete-script', async (event, filename) => {
@@ -1951,6 +1951,35 @@ ipcMain.handle('delete-schedule', async (event, id) => {
 
 const WORKFLOWS_FILE = path.join(DATA_DIR, 'workflows.json')
 
+// Workflow favorites mirror script favorites but live in their own file so
+// the existing favorites.json + pruneFavorites flow (which validates against
+// SCRIPTS_DIR) doesn't need to learn about workflow IDs.
+const WORKFLOW_FAVORITES_FILE = path.join(DATA_DIR, 'workflow_favorites.json')
+
+function loadWorkflowFavorites() {
+  try {
+    if (!fs.existsSync(WORKFLOW_FAVORITES_FILE)) return []
+    const raw = fs.readFileSync(WORKFLOW_FAVORITES_FILE, 'utf8')
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return Array.from(new Set(parsed.filter(f => typeof f === 'string')))
+  } catch (e) {
+    console.error('[willettbot] workflow favorites load failed:', e)
+    return []
+  }
+}
+
+function saveWorkflowFavorites(list) {
+  try {
+    fs.writeFileSync(WORKFLOW_FAVORITES_FILE,
+                     JSON.stringify(Array.from(new Set(list)), null, 2), 'utf8')
+    return true
+  } catch (e) {
+    console.error('[willettbot] workflow favorites save failed:', e)
+    return false
+  }
+}
+
 function loadWorkflows() {
   try {
     if (!fs.existsSync(WORKFLOWS_FILE)) return []
@@ -1978,7 +2007,39 @@ function saveWorkflows(list) {
 }
 
 ipcMain.handle('list-workflows', async () => {
-  return { ok: true, workflows: loadWorkflows() }
+  // Attach a favorite flag so the workflows list and the hub favorites
+  // strip can render heart state from a single source of truth.
+  const favs = new Set(loadWorkflowFavorites())
+  const workflows = loadWorkflows().map(w => Object.assign({}, w, {
+    favorite: favs.has(w.id),
+  }))
+  return { ok: true, workflows }
+})
+
+// Mirror of toggle-favorite for workflows. Same optimistic-UI flow:
+// renderer flips the heart instantly, awaits us, reverts on error.
+ipcMain.handle('toggle-workflow-favorite', async (event, payload) => {
+  try {
+    if (!payload || !payload.id) {
+      return { ok: false, error: 'missing id' }
+    }
+    const id = String(payload.id).trim()
+    const knownIds = new Set(loadWorkflows().map(w => w.id))
+    if (!knownIds.has(id)) {
+      return { ok: false, error: 'Workflow not found.' }
+    }
+    const current = new Set(loadWorkflowFavorites())
+    const alreadyFav = current.has(id)
+    const newState = typeof payload.favorite === 'boolean'
+      ? payload.favorite
+      : !alreadyFav
+    if (newState) current.add(id)
+    else current.delete(id)
+    saveWorkflowFavorites(Array.from(current))
+    return { ok: true, favorite: newState }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
 })
 
 ipcMain.handle('save-workflow', async (event, payload) => {
