@@ -3846,6 +3846,11 @@
     return !!(b && b.style && b.style.display && b.style.display !== 'none')
   }
 
+  // Last-script-launched name, used by the activity log so an error row
+  // (which doesn't carry the script name on its event) can still show
+  // which script blew up. Cleared on script-done / stopped paths.
+  var _currentRunningName = null
+
   function _startScript(filename, variables) {
     clearLog()
     appendLog('step', '▶ Starting ' + filename)
@@ -3853,6 +3858,13 @@
     // is moving the mouse into other apps and stealing focus.
     appendLog('step', '⎋ Press Esc any time to stop.')
     document.getElementById('script-stop-btn').style.display = 'inline-block'
+    // Resolve the display name from the cache so the activity row reads
+    // "My morning routine — Ran" instead of "Script Builder — Ran".
+    _currentRunningName = filename
+    if (Array.isArray(_scriptsCache)) {
+      var meta = _scriptsCache.find(function(s) { return s.filename === filename })
+      if (meta && meta.name) _currentRunningName = meta.name
+    }
     var payload = { filename: filename }
     if (variables && typeof variables === 'object') payload.variables = variables
     ipcRenderer.send('run-script', payload)
@@ -3990,7 +4002,7 @@
       var res = await ipcRenderer.invoke('save-schedule', payload)
       if (res && res.ok) {
         appendLog('done', '📅 Scheduled ' + (meta && meta.name || filename) + ' — ' + describeSchedule(res.schedule))
-        logActivity('Script Builder', 'Scheduled ' + (meta && meta.name || filename))
+        logActivity((meta && meta.name) || filename, 'Scheduled')
         document.getElementById('script-vars-modal').style.display = 'none'
         _pendingScript = null
         loadSchedules()
@@ -4501,7 +4513,8 @@
         // the workflow, so we'd double-log otherwise.
         if (!_workflowActive) {
           document.getElementById('script-stop-btn').style.display = 'none'
-          logActivity('Script Builder', 'Error in script')
+          logActivity(_currentRunningName || 'Script', 'Errored')
+          _currentRunningName = null
         }
       } else if (evt.event === 'failsafe') {
         appendLog('warn', '⏹ Stopped')
@@ -4513,11 +4526,21 @@
         // workflow-done will handle the final teardown.
         if (!_workflowActive) {
           document.getElementById('script-stop-btn').style.display = 'none'
-          logActivity('Script Builder', 'Ran ' + (evt.name || 'script'))
+          // Prefer the event's name (set by the runner from the script JSON)
+          // and fall back to whatever _startScript stashed if the runner
+          // didn't include one.
+          logActivity(evt.name || _currentRunningName || 'Script', 'Ran successfully')
+          _currentRunningName = null
         }
       } else if (evt.event === 'stopped') {
         appendLog('warn', '⏹ Stopped')
-        if (!_workflowActive) document.getElementById('script-stop-btn').style.display = 'none'
+        if (!_workflowActive) {
+          document.getElementById('script-stop-btn').style.display = 'none'
+          if (_currentRunningName) {
+            logActivity(_currentRunningName, 'Stopped')
+            _currentRunningName = null
+          }
+        }
       } else if (evt.event === 'workflow-start') {
         // Synthetic event from the main-process orchestrator. Marks the
         // start of a multi-script run; per-step events (script-start,
@@ -4532,7 +4555,7 @@
         _workflowActive = false
         appendLog('done', '✓ Workflow complete')
         document.getElementById('script-stop-btn').style.display = 'none'
-        logActivity('Script Builder', 'Ran workflow: ' + (evt.name || ''))
+        logActivity(evt.name || 'Workflow', 'Ran successfully')
       } else if (evt.event === 'workflow-stopped') {
         _workflowActive = false
         var why = evt.reason === 'user' ? 'stopped by you'
@@ -4542,7 +4565,8 @@
         appendLog('warn', '⏹ Workflow ' + why + ' at step ' + ((evt.atIndex || 0) + 1) +
                           (evt.atScript ? ' (' + evt.atScript + ')' : ''))
         document.getElementById('script-stop-btn').style.display = 'none'
-        logActivity('Script Builder', 'Workflow stopped: ' + (evt.atScript || '?'))
+        logActivity(evt.name || 'Workflow',
+                    evt.atScript ? 'Stopped at ' + evt.atScript : 'Stopped')
       }
     })
   }
@@ -4962,7 +4986,7 @@
         try { await loadScripts() } catch (e) { console.error('[loadScripts]', e) }
         try { highlightSavedScript(res.filename) } catch (e) {}
         try { appendLog('done', '💾 Saved recording as ' + res.filename) } catch (e) {}
-        try { logActivity('Script Builder', 'Recorded ' + res.filename) } catch (e) {}
+        try { logActivity(displayName || res.filename, 'Recorded') } catch (e) {}
       } else if (res && res.conflict) {
         // Don't offer overwrite — block until the user picks a new name.
         _showRecordNameMsg('Already named — "' + (res.filename || filename) +
@@ -5179,10 +5203,13 @@
     style.textContent = [
       '#wb-tut-overlay {',
       '  position: fixed; inset: 0; z-index: 99998;',
-      '  background: rgba(6, 4, 20, 0.78);',
-      '  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);',
+      // Dropped backdrop-filter: blur(4px) — covering the full hub
+      // (favorites grid + presets + builder tile + activity log) with
+      // a live blur was making every Next click feel jittery on lower-
+      // end Macs. Solid darker rgba is GPU-cheap and still feels modal.
+      '  background: rgba(6, 4, 20, 0.92);',
       '  display: flex; align-items: center; justify-content: center;',
-      '  animation: wbTutFade 0.25s ease-out;',
+      '  animation: wbTutFade 0.2s ease-out;',
       '}',
       '@keyframes wbTutFade { from { opacity: 0 } to { opacity: 1 } }',
       '#wb-tut-card {',
@@ -5193,6 +5220,9 @@
       '  color: #f5f3ff; font-family: -apple-system, BlinkMacSystemFont, sans-serif;',
       '  box-shadow: 0 24px 60px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.03) inset;',
       '  position: relative;',
+      // Promote the card to its own GPU layer so re-renders on Next /
+      // Back only repaint the card, not the whole overlay subtree.
+      '  contain: layout paint; will-change: transform; transform: translateZ(0);',
       '}',
       '#wb-tut-skip {',
       '  position: absolute; top: 14px; right: 16px;',
